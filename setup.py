@@ -28,7 +28,11 @@ setup(
     "pyunpack",
     "hatanaka",
     "tqdm",
-    "xarray"
+    "xarray",
+    "scipy",
+      "netcdf4",
+      "h5netcdf",
+      "dask"
   ],
   include_package_data = True,
   package_data = {"gnssvod.doc": ["IGSList.txt"]},
