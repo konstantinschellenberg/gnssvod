@@ -23,6 +23,7 @@ from gnssvod.funcs.constants import _system_name
 #-------------------------------------------------------------------------
 #----------------- FILE SELECTION AND BATCH PROCESSING -------------------
 #-------------------------------------------------------------------------
+
 def preprocess(filepattern: dict,
                orbit: bool = True,
                interval: Union[str,pd.Timedelta,None] = None,
