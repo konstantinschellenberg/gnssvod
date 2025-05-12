@@ -5,23 +5,46 @@ import os
 from pathlib import Path
 
 import gnssvod as gv
-from definitions import FIG, DATA, ROOT, get_repo_root, AUX
-from gnssvod.io.unpack_zip import unpack_gz_files
-from gnssvod.io.bin2rin import bin2rin
+from definitions import FIG, DATA, ROOT, get_repo_root, AUX, GROUND, TOWER
+from gnssvod.geodesy.coordinate import ell2cart
+
+from datetime import datetime
+import calendar
+
+def get_doys_of_month(year: int, month: int) -> list[int]:
+    """
+    Get all Days of Year (DOYs) for a given month.
+
+    Parameters
+    ----------
+    year : int
+        The year for which to calculate DOYs.
+    month : int
+        The month for which to calculate DOYs.
+
+    Returns
+    -------
+    list[int]
+        A list of DOYs for the given month.
+    """
+    doys = []
+    for day in range(1, calendar.monthrange(year, month)[1] + 1):
+        date = datetime(year, month, day)
+        doys.append(date.timetuple().tm_yday)
+    return doys
 
 def main():
-
+    
     # -----------------------------------
     # unzipping
     zip_archive = ROOT / 'zip_archive'
-    ground = 'subcanopy/MOz1_Grnd'
-    tower = 'tower/MOz2_Twr'
+
     testdir = DATA / "test"
     
-    # if not (DATA / ground).exists():
-    #     unpack_gz_files(search_dir=zip_archive / ground, out_dir=DATA / ground)
-    # if not (DATA / tower).exists():
-    #     unpack_gz_files(search_dir=zip_archive / tower, out_dir=DATA / tower)
+    # if not (DATA / GROUND).exists():
+    #     unpack_gz_files(search_dir=zip_archive / GROUND, out_dir=DATA / GROUND)
+    # if not (DATA / TOWER).exists():
+    #     unpack_gz_files(search_dir=zip_archive / TOWER, out_dir=DATA / TOWER)
     
     # -----------------------------------
     # binex to rinex
@@ -40,80 +63,125 @@ def main():
     convbin is now an executable.
     """
     
-    # Tower
-    # bin2rin(search_dir=DATA / tower, out_dir=DATA / tower, overwrite=False, num_workers=18)
-    # Ground
-    bin2rin(search_dir=DATA / ground, out_dir=DATA / ground, overwrite=False, num_workers=18)
-    exit()
+    # TOWER
+    # bin2rin(search_dir=DATA / TOWER, out_dir=DATA / TOWER, overwrite=False, num_workers=18)
+    # GROUND
+    # bin2rin(search_dir=DATA / GROUND, out_dir=DATA / GROUND, overwrite=False, num_workers=18)
+    
     # -----------------------------------
-    # Process 1 file
+    # indexing
     
-    filepath = Path('/home/konsch/Documents/5-Repos/gnssvod/data/tower/LOG1_15sec_BINEX/23149/SEPT149a.23.obs')
-    testdir = DATA / "test"
-    filepattern = {'MOz1_Grnd': str(filepath)}
-    outpattern = {'MOz1_Grnd': str(testdir)}
+    # example file
+    year = 2022
+    doy = 122
     
-    all_columns = ['C1', 'C2', 'C5', 'C6', 'C7', 'C8', 'L1', 'L2', 'L5', 'L6', 'L7', 'L8',
-       'P1', 'P2', 'Azimuth', 'Elevation']
-    keepvars = ['S?', 'S??']
-    result = gv.preprocess(filepattern=filepattern,
-                           interval='15s',
-                           keepvars=keepvars,
-                           outputresult=True,
-                           overwrite=True,
-                           aux_path=str(AUX),
-                           outputdir=outpattern)
+    # month = 5
+    # doys = get_doys_of_month(year, month)
     
-    # and show data frame
-    result['MOz1_Grnd'][0].observation
-    result['MOz1_Grnd'][0].observation.columns
+    # search pattern needs to be glob-compatible
+    all_per_year = f"SEPT???[a-z].{year % 100:02d}.obs"
+    one_day = f"SEPT{doy:03d}[a-z].{year % 100:02d}.obs"
     
-    result['MOz1_Grnd'][0].observation['S1C']
-    #print percentage of NaN values per column
-    print(result['MOz1_Grnd'][0].observation.isna().mean() * 100)
+    search_horizont = {
+        "all_per_year": all_per_year,
+        "one_day": one_day,
+    }
     
-    # make a plot of nan/non-nan values of all cols
-    result['MOz1_Grnd'][0].observation.isna().sum().plot(kind='bar')
-    # make a plot of nan/non-nan values of all cols
-    from matplotlib import pyplot as plt
-    plt.show()
-    
-    res = result['MOz1_Grnd'][0].observation
-    # unfold multi-index
-    res.reset_index(inplace=True)
-    # make a scatterplot x=datetime, y=col (nan/non-nan)
-    
-    # Create a DataFrame indicating NaN (1) or non-NaN (0) for each column
-    nan_status = res.isna().astype(int)
-    
-    # Plot each column's NaN status against the datetime
-    for col in nan_status.columns:
-        plt.scatter(res['datetime'], nan_status[col], label=col, alpha=0.5)
-    
-    plt.xlabel('Datetime')
-    plt.ylabel('NaN Status (1=NaN, 0=Non-NaN)')
-    plt.title('Scatterplot of NaN/Non-NaN Values Over Time')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.show()
-
-    # -----------------------------------
-    
-    """
-    - 2024 first
-    - choose cols to stay (S?)
-    
-    """
-    # batch processing
-    
-    pattern = {'Dav2_Twr': 'data_RINEX2.11/Dav2_Twr/rinex/*.*O',
-               'Dav1_Grnd': 'data_RINEX2.11/Dav1_Grnd/rinex/*.*O'}
-    outputdir = {'Dav2_Twr': 'data_RINEX2.11/Dav2_Twr/nc/',
-                 'Dav1_Grnd': 'data_RINEX2.11/Dav1_Grnd/nc/'}
     # what variables should be kept
     keepvars = ['S?', 'S??']
     
-    gv.preprocess(pattern, interval='15s', keepvars=keepvars, outputdir=outputdir)
+    moflux_coordinates = {"lat": 38.7441,
+                          "lon": 360 - 92.2,
+                          "h": 219}
+    # non-sane coords
+    pos = ell2cart(**moflux_coordinates)
+    # (-191222.2171873083, -4977655.015253694, 3970336.885343948)
+    
+    # -----------------------------------
+    # Process 1 dataset
+    
+    one_dataset = True
+    if one_dataset:
+        # testdir = DATA / "test"
+        station = "MOz1_Twr"
+        filepattern = {station: str(DATA / GROUND / search_horizont["one_day"])}
+        outpattern = {station: str(DATA / GROUND)}
+        
+        args = {
+            'filepattern': filepattern,
+            'interval': '15s',
+            'keepvars': keepvars,
+            'outputdir': outpattern,
+            'overwrite': True,
+            'approx_position': pos,
+            'aux_path': str(AUX),
+            'outputresult': True,
+            'num_workers': 15,
+        }
+        result = gv.preprocess(**args)
+        
+        # and show data frame
+        res = result[station][0].observation
+        res.columns
+        
+        res['S1C']
+        #print percentage of NaN values per column
+        print(res.isna().mean() * 100)
+        
+        # sort all columns alphabetically
+        res = res.reindex(sorted(res.columns), axis=1)
+        
+        #make a barplot of means per col
+        res.mean().plot(kind='bar', figsize=(10, 6))
+        from matplotlib import pyplot as plt
+        plt.show()
+        
 
+    # -----------------------------------
+    # batch processing
+
+    both_datasets = False
+    if both_datasets:
+        pattern = {'MOz1_Grnd': str(DATA / GROUND / one_day),
+                   'MOz1_Twr': str(DATA / TOWER / one_day)}
+        outputdir = {'MOz1_Grnd': str(DATA / GROUND),
+                     'MOz1_Twr': str(DATA / TOWER)}
+        
+        arg = {
+            'filepattern': pattern,
+            'interval': '15s',
+            'keepvars': keepvars,
+            'outputdir': outputdir,
+            'overwrite': False,
+            'approx_position': pos,
+            'aux_path': str(AUX),
+            'outputresult': True,
+        }
+        
+        res = gv.preprocess(**arg)
+        len(res['MOz1_Grnd'])
+        len(res['MOz1_Twr'])
+        twr_obs = res['MOz1_Twr'][0]
+        
+        # inspect the data
+        twr_obs.to_xarray()
+        
+        # as pandas
+        twr = res['MOz1_Twr'][0].observation
+        grnd = res['MOz1_Grnd'][0].observation
+
+        twr.columns
+        grnd.columns
+        
+        # print all columns that are in common
+        common_cols = set(twr.columns).intersection(set(grnd.columns))
+        print("cols in common\n", common_cols)
+        
+        # print all columns that are not in common
+        twr_only = set(twr.columns).difference(set(grnd.columns))
+        grnd_only = set(grnd.columns).difference(set(twr.columns))
+        print("twr only\n", twr_only)
+        print("grnd only\n", grnd_only)
+        
 if __name__ == '__main__':
     main()

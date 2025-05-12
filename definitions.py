@@ -28,3 +28,6 @@ ROOT = get_repo_root()  # get the root path of the project
 FIG = ROOT / "figures"
 DATA = ROOT / "data"
 AUX = DATA / 'orbit'
+
+GROUND = 'subcanopy/MOz1_Grnd'
+TOWER = 'tower/MOz2_Twr'

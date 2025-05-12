@@ -23,39 +23,104 @@ from gnssvod.funcs.constants import _system_name
 #-------------------------------------------------------------------------
 #----------------- FILE SELECTION AND BATCH PROCESSING -------------------
 #-------------------------------------------------------------------------
+import os
+import glob
+import numpy as np
+import pandas as pd
+import xarray as xr
+import tempfile
+import fnmatch
+from pathlib import Path
+import concurrent.futures
+from typing import Union, Literal, Any
+from gnssvod.io.io import Observation
+from gnssvod.io.readFile import read_obsFile
+from gnssvod.io.exporters import export_as_nc
+from gnssvod.position.interpolation import sp3_interp_fast
+from gnssvod.position.position import gnssDataframe
+from gnssvod.funcs.constants import _system_name
+
+
+def process_single_file(file_info, keepvars, interval, orbit, aux_path, approx_position,
+                        outputdir, encoding, outputresult, orbit_data=None):
+    """Worker function to process a single file"""
+    station_name, filename, out_name = file_info
+    
+    # read in the file
+    x = read_obsFile(filename)
+    print(f"Processing {len(x.observation):n} individual observations")
+    
+    # only keep required vars
+    if keepvars is not None:
+        x.observation = subset_vars(x.observation, keepvars)
+        # update the observation_types list
+        x.observation_types = x.observation.columns.to_list()
+    
+    # resample if required
+    if interval is not None:
+        x = resample_obs(x, interval)
+    
+    # calculate Azimuth and Elevation if required
+    if orbit:
+        # use a prescribed position if one was passed as argument
+        if approx_position is not None:
+            x.approx_position = approx_position
+        # check that an approximate position exists before proceeding
+        if (x.approx_position == [0, 0, 0]) or (x.approx_position is None):
+            raise ValueError(
+                "Missing an approximate antenna position. Provide the argument 'approx_position' to preprocess()")
+        print(f"Calculating Azimuth and Elevation")
+        
+        # we can't share orbit_data effectively between processes, so each process calculates it individually
+        x, new_orbit_data = add_azi_ele(x, aux_path=aux_path)
+    
+    # make sure we drop any duplicates
+    x.observation = x.observation[~x.observation.index.duplicated(keep='first')]
+    
+    # write to file if required
+    if outputdir is not None:
+        outpath = str(Path(outputdir[station_name], out_name))
+        export_as_nc(ds=x.to_xarray(),
+                     outpath=outpath,
+                     encoding=encoding)
+        print(f"Saved {len(x.observation):n} individual observations in {outpath}")
+    
+    return (station_name, x) if outputresult else None
+
 
 def preprocess(filepattern: dict,
                orbit: bool = True,
-               interval: Union[str,pd.Timedelta,None] = None,
-               keepvars: Union[list,None] = None,
+               interval: Union[str, pd.Timedelta, None] = None,
+               keepvars: Union[list, None] = None,
                outputdir: Union[dict, None] = None,
                overwrite: bool = False,
                encoding: Union[None, Literal['default'], dict] = 'default',
                outputresult: bool = False,
                aux_path: Union[str, None] = None,
-               approx_position: list[float] = None) -> dict[Any,list[Observation]]:
+               approx_position: list[float] = None,
+               num_workers: int = None) -> dict[Any, list[Observation]]:
     """
-    Reads and processes structured lists of RINEX observation files.
-    
+    Reads and processes structured lists of RINEX observation files in parallel.
+
     Parameters
     ----------
-    filepattern: dictionary 
-        Dictionary of station names and UNIX-style patterns to match RINEX 
+    filepattern: dictionary
+        Dictionary of station names and UNIX-style patterns to match RINEX
         observation files. For example filepattern={'station1':'/path/to/files/of/station1/*O'}
-    
-    orbit: bool (optional) 
+
+    orbit: bool (optional)
         if orbit=True, will download orbit solutions and calculate Azimuth and Elevation parameters
         if orbit=False, will not calculate additional gnss parameters
-        
+
     interval: string or None (optional)
         if interval = None, the observations will be returned at the same rate as they were saved
         if interval = pandas Timedelta or str, this will be used to resample (average) the obervations (e.g. interval="15s")
-    
+
     keepvars: list of strings or None (optional)
         Defines what columns are kept after processing. This can help reduce the size of the saved data.
         For example keepvars = ['S1','S2','Azimuth','Elevation']
         If None, no columns are removed
-        
+
     outputdir: None, dictionary (optional)
         A dictionary of station names and folders indicating where to save the preprocessed data
         For example outputdir={'station1':'/path/where/to/save/preprocessed/data'}
@@ -72,7 +137,7 @@ def preprocess(filepattern: dict,
         finer customization of the encoding.
 
     overwrite: bool (optional)
-        If False (default), RINEX files with an existing matching file in the 
+        If False (default), RINEX files with an existing matching file in the
         specified output directory will be skipped entirely
 
     outputresult: bool (optional)
@@ -84,107 +149,93 @@ def preprocess(filepattern: dict,
         If None is passed (default), a temporary directory is created and cleaned up if the processing succeeds.
 
     approx_position: list (optional)
-        Position of the antenna provided as a list of cartesian coordinates [X,Y,Z]. This argument can be used to replace the 
-        approximate position taken from the source RINEX files. 
-        It is mandatory if source RINEX files actually miss the "APPROX POSITION XYZ" information in the header and the 
-        'orbit' option is True. 
+        Position of the antenna provided as a list of cartesian coordinates [X,Y,Z]. This argument can be used to replace the
+        approximate position taken from the source RINEX files.
+        It is mandatory if source RINEX files actually miss the "APPROX POSITION XYZ" information in the header and the
+        'orbit' option is True.
         To convert geographic coordinates (lat, lon, h) to cartesian (X,Y,Z) use gnssvod.geodesy.coordinate.ell2cart(lat,lon,h).
+
+    num_workers: int (optional)
+        Number of parallel workers to use. If None, uses the number of CPU cores.
 
     Returns
     -------
-    If outputresult = True, returns a dictionary. There is one key per station name and each item contains the GNSS observation object read 
+    If outputresult = True, returns a dictionary. There is one key per station name and each item contains the GNSS observation object read
     from each input RINEX file. For example output={'station1':[gnssvod.io.io.Observation,gnssvod.io.io.Observation,...]}
-    
     """
     # set up temporary directory if necessary
     if orbit and (aux_path is None):
         tmp_folder = tempfile.TemporaryDirectory()
         aux_path = tmp_folder.name
         print(f"Created a temporary directory at {aux_path}")
-    else: 
+    else:
         tmp_folder = None
+    
     # grab all files matching the patterns
     filelist = get_filelist(filepattern)
     
-    out = dict()
-    for item in filelist.items():
-        station_name = item[0]
-        filelist = item[1]
-
+    # Prepare task list for parallel processing
+    all_tasks = []
+    
+    for station_name, files in filelist.items():
         # checking which files will be skipped (if necessary)
         if (not overwrite) and (outputdir is not None):
             # gather all files that already exist in the outputdir
-            files_to_skip = get_filelist({station_name:f"{outputdir[station_name]}*.nc"})
+            files_to_skip = get_filelist({station_name: f"{outputdir[station_name]}*.nc"})
             files_to_skip = [os.path.basename(x) for x in files_to_skip[station_name]]
         else:
             files_to_skip = []
         
-        # for each file
-        result = []
-        for i,filename in enumerate(filelist):
-            # determine the name of the output file that will be saved at the end of the loop
-            out_name = os.path.splitext(os.path.basename(filename))[0]+'.nc'
-            # if the name of the saved output file is in the files to skip, skip processing
+        # Add each file as a task if it shouldn't be skipped
+        for filename in files:
+            out_name = os.path.splitext(os.path.basename(filename))[0] + '.nc'
             if out_name in files_to_skip:
                 print(f"{out_name} already exists, skipping.. (pass overwrite=True to overwrite)")
-                continue # skip remainder of loop and go directly to next filename
+                continue
             
-            # read in the file
-            x = read_obsFile(filename)
-            print(f"Processing {len(x.observation):n} individual observations")
-
-            # only keep required vars
-            if keepvars is not None:
-                x.observation = subset_vars(x.observation,keepvars)
-                # update the observation_types list
-                x.observation_types = x.observation.columns.to_list()
-
-            # resample if required
-            if interval is not None:
-                x = resample_obs(x,interval)
-                
-            # calculate Azimuth and Elevation if required
-            if orbit:
-                # use a prescribed position if one was passed as argument
-                if approx_position is not None:
-                    x.approx_position = approx_position
-                # check that an approximate position exists before proceeding
-                if (x.approx_position == [0,0,0]) or (x.approx_position is None):
-                    raise ValueError("Missing an approximate antenna position. Provide the argument 'approx_position' to preprocess()")
-                print(f"Calculating Azimuth and Elevation")
-                # note: orbit cannot be parallelized easily because it 
-                # downloads and unzips third-party files in the current directory
-                if not 'orbit_data' in locals():
-                    # if there is no previous orbit data, the orbit data is returned as well
-                    x, orbit_data = add_azi_ele(x, aux_path = aux_path)
-                else:
-                    # on following iterations the orbit data is tentatively recycled to reduce computational time
-                    x, orbit_data = add_azi_ele(x, orbit_data, aux_path = aux_path)
-
-            # make sure we drop any duplicates
-            x.observation=x.observation[~x.observation.index.duplicated(keep='first')]
-            
-            # store result in memory if required
-            if outputresult:
-                result.append(x)
-                
-            # write to file if required
-            if outputdir is not None:
-                outpath = str(Path(outputdir[station_name],out_name))
-                export_as_nc(ds = x.to_xarray(),
-                             outpath = outpath,
-                             encoding = encoding)
-                print(f"Saved {len(x.observation):n} individual observations in {outpath}")
-
-        # store station in memory if required
-        if outputresult:
-            out[station_name]=result
-
+            # Add to task list
+            all_tasks.append((station_name, filename, out_name))
+    
+    # Initialize results dictionary
+    out = {station: [] for station in filelist.keys()}
+    
+    # todo: load all required orbit data in advance!
+    
+    # Process files in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        futures = {
+            executor.submit(
+                process_single_file,
+                task,
+                keepvars,
+                interval,
+                orbit,
+                aux_path,
+                approx_position,
+                outputdir,
+                encoding,
+                outputresult
+            ): task for task in all_tasks
+        }
+        
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(futures):
+            task = futures[future]
+            station_name = task[0]
+            try:
+                result = future.result()
+                if result is not None:  # if outputresult=True
+                    station, obs = result
+                    out[station].append(obs)
+            except Exception as e:
+                print(f"Error processing {task[1]}: {e}")
+    
     # clean up temporary directory if one exists
     if tmp_folder is not None:
         tmp_folder.cleanup()
         print(f"Removed the temporary directory at {aux_path}")
-
+    
     if outputresult:
         return out
     else:

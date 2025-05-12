@@ -10,6 +10,7 @@
 - [x] Make Binex converter
 - [x] Process towards RINEX
 - [ ] Check missing ground obs data
+- [ ] Multiprocessing not yet working: Results differ when redone...
 
 ## Comm
 - Ask Benjamin L. if they were successful with RINEX proc
