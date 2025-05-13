@@ -10,6 +10,7 @@ from matplotlib.collections import PatchCollection
 import matplotlib.dates as mdates
 
 from definitions import FIG, DATA, ROOT, get_repo_root, AUX, GROUND, TOWER
+from processing.settings import *
 
 
 def plot_satellite_polar(df, sv, station_name, snr_col='S7Q', figsize=(10, 10), show=True):

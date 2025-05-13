@@ -6,16 +6,19 @@ import pathlib
 from typing import Union
 from gnssvod.funcs.date import (gpsweekday, datetime2doy)
 from gnssvod.doc.IGS import IGS, is_IGS
+import processing.settings
+
+
 # ===========================================================
 
 def obsFileName(stationName, date, zipped = False):
     doy = datetime2doy(date, string = True)
     if len(doy) == 1:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "o"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "o"
     elif len(doy) == 2:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "o"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "o"
     else:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "o"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "o"
     
     if zipped == True:
         rinexFile = rinexFile + ".Z"
@@ -81,11 +84,11 @@ def clockFileName(epoch, interval=30, product="cod", dir: Union[str,None] = None
 def ionFileName(date, product = "igs", zipped = False):
     doy = datetime2doy(date, string = True)
     if len(doy) == 1:
-        ionFile = product + "g" + doy + "0." + str(date.year)[-2:] + "i"
+        ionFile = product + "g" + doy + "0." + str(processing.settings.year)[-2:] + "i"
     elif len(doy) == 2:
-        ionFile = product + "g" + doy + "0." + str(date.year)[-2:] + "i"
+        ionFile = product + "g" + doy + "0." + str(processing.settings.year)[-2:] + "i"
     else:
-        ionFile = product + "g" + doy + "0." + str(date.year)[-2:] + "i"
+        ionFile = product + "g" + doy + "0." + str(processing.settings.year)[-2:] + "i"
 
     if zipped == True:
         ionFile = ionFile + ".Z"
@@ -95,11 +98,11 @@ def ionFileName(date, product = "igs", zipped = False):
 def navFileName(stationName, date, zipped = False):
     doy = datetime2doy(date, string = True)
     if len(doy) == 1:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "n"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "n"
     elif len(doy) == 2:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "n"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "n"
     else:
-        rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "n"
+        rinexFile = stationName + doy + "0." + str(processing.settings.year)[-2:] + "n"
     
     if zipped == True:
         rinexFile = rinexFile + ".Z"
@@ -110,9 +113,9 @@ def nav3FileName(stationName, date, zipped = False):
     doy = datetime2doy(date, string = True) # for RINEX data names
     siteInfo = IGS(stationName)
     if stationName.upper() == "BRDC":
-        rinexFile = "BRDC00IGS_R_" + str(date.year) + str(doy) + "0000_01D_MN.rnx"
+        rinexFile = "BRDC00IGS_R_" + str(processing.settings.year) + str(doy) + "0000_01D_MN.rnx"
     else:
-        rinexFile = siteInfo.SITE[0] + "_R_" + str(date.year) + str(doy) + "0000_01D_MN.rnx"
+        rinexFile = siteInfo.SITE[0] + "_R_" + str(processing.settings.year) + str(doy) + "0000_01D_MN.rnx"
     """
     if len(doy) == 1:
         rinexFile = stationName + doy + "0." + str(date.year)[-2:] + "p"
@@ -129,7 +132,7 @@ def nav3FileName(stationName, date, zipped = False):
 def obs3FileName(stationName, date, zipped = False):
     doy = datetime2doy(date, string = True) # for RINEX data names
     siteInfo = IGS(stationName)
-    rinexFile = siteInfo.SITE[0] + "_R_" + str(date.year) + str(doy) + "0000_01D_30S_MO.crx"
+    rinexFile = siteInfo.SITE[0] + "_R_" + str(processing.settings.year) + str(doy) + "0000_01D_30S_MO.crx"
     if zipped == True:
         rinexFile = rinexFile + ".gz"
     

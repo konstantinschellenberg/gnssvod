@@ -1,128 +1,58 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import os
-from pathlib import Path
-
 import gnssvod as gv
-from definitions import FIG, DATA, ROOT, ZIP, get_repo_root, AUX, GROUND, TOWER
-from gnssvod.geodesy.coordinate import ell2cart
+from definitions import DATA, ZIP, AUX, GROUND, TOWER
 from gnssvod.io.bin2rin import bin2rin
 from gnssvod.io.unpack_zip import unpack_gz_files
-from gnssvod.io.preprocess import preprocess_parallel
 
-from datetime import datetime
-import calendar
+from processing.settings import *
 
+# -----------------------------------
+suffix = "*.obs"
 
-def get_doys_of_month(year: int, month: int) -> list[int]:
-    """
-    Get all Days of Year (DOYs) for a given month.
+# -----------------------------------
+# unzipping
 
-    Parameters
-    ----------
-    year : int
-        The year for which to calculate DOYs.
-    month : int
-        The month for which to calculate DOYs.
+if unzipping_run:
+    if not (DATA / GROUND).exists():
+        unpack_gz_files(search_dir=ZIP / GROUND, out_dir=DATA / GROUND)
+    if not (DATA / TOWER).exists():
+        unpack_gz_files(search_dir=ZIP / TOWER, out_dir=DATA / TOWER)
 
-    Returns
-    -------
-    list[int]
-        A list of DOYs for the given month.
-    """
-    doys = []
-    for day in range(1, calendar.monthrange(year, month)[1] + 1):
-        date = datetime(year, month, day)
-        doys.append(date.timetuple().tm_yday)
-    return doys
+# -----------------------------------
+# binex to rinex
+
+if binex2rinex_run:
+    # GROUND
+    bin2rin(search_dir=DATA / GROUND, driver=binex2rinex_driver, out_dir=DATA / GROUND, overwrite=False, num_workers=18)
+    # TOWER
+    bin2rin(search_dir=DATA / TOWER, driver=binex2rinex_driver, out_dir=DATA / TOWER, overwrite=False, num_workers=18)
 
 
 # -----------------------------------
-# -----------------------------------
-# -----------------------------------
-# SETTINGS
+# Process 1 dataset
 # -----------------------------------
 
-# script
-unzipping_run = False
-binex2rinex_run = False
-one_dataset_run = True
-both_datasets_run = False
-
-# options
-binex2rinex_driver = "teqc"  # or "convbin"
-
-# example file
-year = 2024
-doy = 122
-
-# -----------------------------------
-
-def main():
+if one_dataset_run:
+    # testdir = DATA / "test"
+    station = "MOz1_Grnd"
+    filepattern = {station: str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
+    outpattern = {station: str(DATA / TOWER)}
     
-    # -----------------------------------
-    # unzipping
-    
-    if unzipping_run:
-        if not (DATA / GROUND).exists():
-            unpack_gz_files(search_dir=ZIP / GROUND, out_dir=DATA / GROUND)
-        if not (DATA / TOWER).exists():
-            unpack_gz_files(search_dir=ZIP / TOWER, out_dir=DATA / TOWER)
-    
-    # -----------------------------------
-    # binex to rinex
-    
-    if binex2rinex_run:
-        # GROUND
-        bin2rin(search_dir=DATA / GROUND, driver=binex2rinex_driver, out_dir=DATA / GROUND, overwrite=False, num_workers=18)
-        # TOWER
-        bin2rin(search_dir=DATA / TOWER, driver=binex2rinex_driver, out_dir=DATA / TOWER, overwrite=False, num_workers=18)
-    
-    # -----------------------------------
-    # settings
-    
-    # search pattern needs to be glob-compatible
-    all_per_year = f"SEPT???[a-z].{year % 100:02d}.obs"
-    one_day = f"SEPT{doy:03d}[a-z].{year % 100:02d}.obs"
-    
-    search_horizont = {
-        "all_per_year": all_per_year,
-        "one_day": one_day,
+    args = {
+        'filepattern': filepattern,
+        'interval': '15s',
+        'keepvars': keepvars,
+        'outputdir': outpattern,
+        'overwrite': True,
+        'approx_position': pos,
+        'aux_path': str(AUX) if save_orbit else None,
+        'outputresult': True if output_results_locally else False,
+        'num_workers': 15,
     }
-    
-    # what variables should be kept
-    keepvars = ['S?', 'S??']
-    
-    moflux_coordinates = {"lat": 38.7441,
-                          "lon": 360 - 92.2,
-                          "h": 219}
-    # non-sane coords
-    pos = ell2cart(**moflux_coordinates)
-    # (-191222.2171873083, -4977655.015253694, 3970336.885343948)
-    
-    # -----------------------------------
-    # Process 1 dataset
-    
-    if one_dataset_run:
-        # testdir = DATA / "test"
-        station = "MOz1_Grnd"
-        filepattern = {station: str(DATA / TOWER / search_horizont["one_day"])}
-        outpattern = {station: str(DATA / TOWER)}
-        
-        args = {
-            'filepattern': filepattern,
-            'interval': '15s',
-            'keepvars': keepvars,
-            'outputdir': outpattern,
-            'overwrite': True,
-            'approx_position': pos,
-            'aux_path': str(AUX),
-            'outputresult': True,
-            'num_workers': 15,
-        }
-        # result = gv.preprocess(**args)
-        result = preprocess_parallel(**args)
+    result = gv.preprocess(**args)
+    if output_results_locally:
 
         # and show data frame
         res = result[station][0].observation
@@ -142,27 +72,29 @@ def main():
         plt.show()
         
 
-    # -----------------------------------
-    # batch processing of both datasets
+# -----------------------------------
+# batch processing of both datasets
+# -----------------------------------
 
-    if both_datasets_run:
-        pattern = {'MOz1_Grnd': str(DATA / GROUND / one_day),
-                   'MOz1_Twr': str(DATA / TOWER / one_day)}
-        outputdir = {'MOz1_Grnd': str(DATA / GROUND),
-                     'MOz1_Twr': str(DATA / TOWER)}
-        
-        arg = {
-            'filepattern': pattern,
-            'interval': '15s',
-            'keepvars': keepvars,
-            'outputdir': outputdir,
-            'overwrite': False,
-            'approx_position': pos,
-            'aux_path': str(AUX),
-            'outputresult': True,
-        }
-        
-        res = gv.preprocess(**arg)
+if both_datasets_run:
+    pattern = {'MOz1_Grnd': str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}"),
+               'MOz1_Twr': str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
+    outputdir = {'MOz1_Grnd': str(DATA / GROUND),
+                 'MOz1_Twr': str(DATA / TOWER)}
+    
+    arg = {
+        'filepattern': pattern,
+        'interval': '15s',
+        'keepvars': keepvars,
+        'outputdir': outputdir,
+        'overwrite': True if overwrite else False,
+        'approx_position': pos,
+        'aux_path': str(AUX) if save_orbit else None,
+        'outputresult': True if output_results_locally else False,
+    }
+    
+    res = gv.preprocess(**arg)
+    if output_results_locally:
         len(res['MOz1_Grnd'])
         len(res['MOz1_Twr'])
         twr_obs = res['MOz1_Twr'][0]
@@ -186,6 +118,7 @@ def main():
         grnd_only = set(grnd.columns).difference(set(twr.columns))
         print("twr only\n", twr_only)
         print("grnd only\n", grnd_only)
-        
-if __name__ == '__main__':
-    main()
+
+print("+" * 50)
+print("Finished preprocessing.")
+print("+" * 50)

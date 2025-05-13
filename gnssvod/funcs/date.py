@@ -1,6 +1,10 @@
 # ===========================================================
 # ========================= imports =========================
 import datetime
+
+import processing.settings
+
+
 # ===========================================================
 def gpsweekday(date, Datetime = False):
     start = datetime.date(year= 1980, month= 1, day =6)
@@ -98,7 +102,7 @@ def doy2date(rinexFile):
     return date
 
 def datetime2doy(date, string = False):
-    start = datetime.date(year= date.year, month = 1,  day =1)
+    start = datetime.date(year=processing.settings.year, month = 1, day =1)
     doy = date - start + datetime.timedelta(days = 1)
     doy = doy.days
     if string == True:
