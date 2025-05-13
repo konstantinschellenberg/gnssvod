@@ -137,7 +137,7 @@ def preprocess(filepattern: dict,
         # checking which files will be skipped (if necessary)
         if (not overwrite) and (outputdir is not None):
             # gather all files that already exist in the outputdir
-            files_to_skip = get_filelist({station_name: f"{outputdir[station_name]}*.nc"})
+            files_to_skip = get_filelist({station_name: f"{outputdir[station_name]}/*.nc"})
             files_to_skip = [os.path.basename(x) for x in files_to_skip[station_name]]
         else:
             files_to_skip = []
