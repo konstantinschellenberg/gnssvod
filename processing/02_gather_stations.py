@@ -27,15 +27,14 @@ def search_and_print_files(pattern: str):
     else:
         print(f"No files found matching the pattern '{pattern}'.")
         
-        
 # -----------------------------------
 # Gather stations
 suffix = ".*nc"
 pattern_ground = str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}")
 pattern_tower = str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")
 
-pattern = {'MOz1_Grnd': pattern_ground,
-           'MOz1_Twr': pattern_tower}
+pattern = {ground_station: pattern_ground,
+           tower_station: pattern_tower}
 
 outputdirs = {'MOz': str(DATA / 'gather')}
 Path(outputdirs['MOz']).mkdir(exist_ok=True)
@@ -49,7 +48,7 @@ if printit:
 
 # -----------------------------------
 # define how to make pairs, always give reference station first, matching the dictionary keys of 'pattern'
-pairings = {'MOz': ('MOz1_Twr', 'MOz1_Grnd')}
+pairings = {'MOz': (tower_station, ground_station)}
 keepvars = ['S*', 'Azimuth', 'Elevation']
 
 args = {'filepattern': pattern,

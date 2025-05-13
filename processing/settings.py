@@ -36,6 +36,10 @@ def get_doys_of_month(year: int, month: int) -> list[int]:
 # SETTINGS (user) - 01_run_preprocessing.py
 # -----------------------------------
 
+station = 'MOz'
+ground_station = f"{station}1_Grnd"
+tower_station = f"{station}1_Twr"
+
 # script
 unzipping_run = False
 binex2rinex_run = False
@@ -44,13 +48,15 @@ both_datasets_run = True
 
 # options
 binex2rinex_driver = "teqc"  # or "convbin"
+single_station_to_be_preprocessed = ground_station  # or tower_station
 save_orbit = False  # save orbit files
 output_results_locally = False
 time_selection = "all_per_year"  # or "one_day" or "all_per_year"
 overwrite = True
 
-# example file
+# example year
 year = 2024
+# example file
 doy = 122
 
 # -----------------------------------
@@ -59,6 +65,14 @@ doy = 122
 timeintervals_periods = 1
 timeintervals_freq = 'D'
 timeintervals_closed = 'left'
+
+# -----------------------------------
+# SETTINGS (user) – 03_export_vod.py
+
+bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']}
+angular_resolution = 2  # degrees
+anomaly_type = "phi_theta"  # or "phi_theta_sv"
+plot = False
 
 # -----------------------------------
 # settings (static)

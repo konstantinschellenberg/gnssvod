@@ -10,7 +10,6 @@ from processing.settings import *
 
 # -----------------------------------
 suffix = "*.obs"
-
 # -----------------------------------
 # unzipping
 
@@ -36,9 +35,8 @@ if binex2rinex_run:
 
 if one_dataset_run:
     # testdir = DATA / "test"
-    station = "MOz1_Grnd"
-    filepattern = {station: str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
-    outpattern = {station: str(DATA / TOWER)}
+    filepattern = {single_station_to_be_preprocessed: str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
+    outpattern = {single_station_to_be_preprocessed: str(DATA / TOWER)}
     
     args = {
         'filepattern': filepattern,
@@ -77,10 +75,10 @@ if one_dataset_run:
 # -----------------------------------
 
 if both_datasets_run:
-    pattern = {'MOz1_Grnd': str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}"),
-               'MOz1_Twr': str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
-    outputdir = {'MOz1_Grnd': str(DATA / GROUND),
-                 'MOz1_Twr': str(DATA / TOWER)}
+    pattern = {ground_station: str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}"),
+               tower_station: str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
+    outputdir = {ground_station: str(DATA / GROUND),
+                 tower_station: str(DATA / TOWER)}
     
     arg = {
         'filepattern': pattern,
@@ -95,16 +93,16 @@ if both_datasets_run:
     
     res = gv.preprocess(**arg)
     if output_results_locally:
-        len(res['MOz1_Grnd'])
-        len(res['MOz1_Twr'])
-        twr_obs = res['MOz1_Twr'][0]
+        len(res[ground_station])
+        len(res[tower_station])
+        twr_obs = res[tower_station][0]
         
         # inspect the data
         twr_obs.to_xarray()
         
         # as pandas
-        twr = res['MOz1_Twr'][0].observation
-        grnd = res['MOz1_Grnd'][0].observation
+        twr = res[tower_station][0].observation
+        grnd = res[ground_station][0].observation
 
         twr.columns
         grnd.columns
