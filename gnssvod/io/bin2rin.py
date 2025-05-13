@@ -10,7 +10,7 @@ from typing import Union, Optional
 from tqdm import tqdm
 
 
-def bin2rin(search_dir: Union[str, Path], out_dir: Optional[Union[str, Path]] = None,
+def bin2rin(search_dir: Union[str, Path], driver: str = "convbin", out_dir: Optional[Union[str, Path]] = None,
             overwrite: bool = False, num_workers: int = 15) -> None:
     """
     Recursively finds all BINEX files (.bnx) and converts them to RINEX format
@@ -19,6 +19,8 @@ def bin2rin(search_dir: Union[str, Path], out_dir: Optional[Union[str, Path]] = 
 
     Parameters
     ----------
+    driver: str
+        The driver to use for conversion. Currently 'convbin' and 'teqc' are supported.
     search_dir : str or Path
         Directory to recursively search for BINEX files
     out_dir : str or Path, optional
@@ -49,36 +51,78 @@ def bin2rin(search_dir: Union[str, Path], out_dir: Optional[Union[str, Path]] = 
         if output_obs_path.exists() and not overwrite:
             return {"status": "skipped", "file": file_path}
         
-        # Build the convbin command
-        cmd = ["convbin", "-r", "binex", "-os"]
+        # -----------------------------------
+        # CONVBIN DRIVER (RTKLIB)
+        # -----------------------------------
         
-        # Add output directory if provided
-        if out_dir is not None:
-            cmd.extend(["-d", str(out_dir)])
-        
-        # Add the input file
-        cmd.append(str(file_path))
-        
-        try:
-            # Run the command
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True
+        if driver == "convbin":
+            # Build the convbin command
+            cmd = ["convbin", "-r", "binex", "-os"]
+            
+            # Add output directory if provided
+            if out_dir is not None:
+                cmd.extend(["-d", str(out_dir)])
+            
+            # Add the input file
+            cmd.append(str(file_path))
+            
+            try:
+                # Run the command
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True
+                )
+                return {"status": "processed", "file": file_path}
+            except subprocess.CalledProcessError as e:
+                return {
+                    "status": "error",
+                    "file": file_path,
+                    "error": str(e),
+                    "stdout": e.stdout,
+                    "stderr": e.stderr
+                }
+            except Exception as e:
+                return {"status": "error", "file": file_path, "error": str(e)}
+            
+        # -----------------------------------
+        # TEQC DRIVER
+        # -----------------------------------
+        elif driver == "teqc":
+            # Build the teqc command without redirection
+            cmd = ["teqc", "-binex", str(file_path)]
+            
+            try:
+                # Run the command and capture stdout
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True
+                )
+                
+                # Write the captured stdout to the output file
+                with open(output_obs_path, 'w') as f:
+                    f.write(result.stdout)
+                
+                return {"status": "processed", "file": file_path}
+            except subprocess.CalledProcessError as e:
+                return {
+                    "status": "error",
+                    "file": file_path,
+                    "error": str(e),
+                    "stdout": e.stdout,
+                    "stderr": e.stderr
+                }
+            except Exception as e:
+                return {"status": "error", "file": file_path, "error": str(e)}
+        else:
+            raise NotImplementedError(
+                f"Driver '{driver}' is not supported. Use 'convbin' or 'teqc'."
             )
-            return {"status": "processed", "file": file_path}
-        except subprocess.CalledProcessError as e:
-            return {
-                "status": "error",
-                "file": file_path,
-                "error": str(e),
-                "stdout": e.stdout,
-                "stderr": e.stderr
-            }
-        except Exception as e:
-            return {"status": "error", "file": file_path, "error": str(e)}
     
     # Convert input to Path object
     search_dir = Path(search_dir)
@@ -94,12 +138,17 @@ def bin2rin(search_dir: Union[str, Path], out_dir: Optional[Union[str, Path]] = 
     error_count = 0
     
     # Check if convbin is available
-    if shutil.which("convbin") is None:
+    if driver == "convbin" and shutil.which("convbin") is None:
         raise RuntimeError(
             "convbin utility not found. Please install RTKLIB and ensure "
             "convbin is in your PATH."
         )
-    
+    elif driver == "teqc" and shutil.which("teqc") is None:
+        raise RuntimeError(
+            "teqc utility not found. Please install teqc and ensure "
+            "teqc is in your PATH."
+        )
+
     # Find all BINEX files first for the progress bar
     binex_files = []
     for root, _, files in os.walk(search_dir):
