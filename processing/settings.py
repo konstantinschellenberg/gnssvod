@@ -71,6 +71,7 @@ timeintervals_closed = 'left'
 
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']}
 angular_resolution = 2  # degrees
+temporal_resolution = 30  # minutes
 anomaly_type = "phi_theta"  # or "phi_theta_sv"
 plot = False
 

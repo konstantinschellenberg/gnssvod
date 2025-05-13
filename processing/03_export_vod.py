@@ -13,6 +13,76 @@ from definitions import FIG, DATA, ROOT, get_repo_root, AUX, GROUND, TOWER
 from processing.settings import *
 
 
+def save_vod_timeseries(vod_ts, filename, overwrite=False):
+    """
+    Save VOD time series data to a NetCDF file.
+
+    Parameters
+    ----------
+    vod_ts : pandas.DataFrame
+        VOD time series data with 'Epoch' in the index
+    filename : str
+        Filename to save (without extension)
+    overwrite : bool, optional
+        Whether to overwrite existing files
+
+    Returns
+    -------
+    path : Path
+        Path to the saved file or None if save failed
+    """
+    import os
+    
+    # Set default directory if not specified
+    directory = DATA / "timeseries"
+    directory.mkdir(parents=True, exist_ok=True)
+    
+    # Create directory if it doesn't exist
+    os.makedirs(directory, exist_ok=True)
+    
+    try:
+        # Create a copy of the dataframe to avoid modifying the original
+        df = vod_ts.copy()
+        
+        # Reset index to get 'Epoch' as a column
+        df = df.reset_index()
+        
+        # Rename 'Epoch' to 'datetime'
+        df = df.rename(columns={'Epoch': 'datetime'})
+        
+        # Set 'datetime' as the index again
+        df = df.set_index('datetime')
+        
+        # Generate output filename based on the date range
+        start = df.index.min()
+        end = df.index.max()
+        outname = f"{filename}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
+        
+        # Add .nc extension if not already present
+        if not outname.endswith('.nc'):
+            outname = f"{outname}.nc"
+            
+        # Full file path
+        file_path = directory / outname
+        
+        # Convert to xarray dataset for NetCDF export
+        ds = df.to_xarray()
+        
+        # Check if file exists and overwrite flag
+        if file_path.exists() and not overwrite:
+            print(f"File {file_path} already exists. Pass overwrite=True to overwrite.")
+            return file_path
+        
+        # Save to NetCDF
+        ds.to_netcdf(file_path)
+        
+        print(f"Saved VOD time series to {file_path}")
+        return file_path
+    
+    except Exception as e:
+        print(f"Error saving file {file_path}: {str(e)}")
+        return None
+    
 def plot_hemi(vod, patches, title=None):
     fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
     # associate the mean values to the patches, join inner will drop patches with no data, making plotting slightly faster
@@ -75,6 +145,21 @@ def plot_satellite_polar(df, sv, station_name, snr_col='S7Q', figsize=(10, 10), 
     if show:
         plt.show()
 
+def plot_anomaly(vod_ts, bands, **kwargs):
+    figsize = kwargs.get('figsize', (10, 5))
+    fig, ax = plt.subplots(1, figsize=figsize)
+    for band in bands:
+        # plot each measurement and color by signal to noise ratio
+        ax.plot(vod_ts.index.get_level_values('Epoch'), vod_ts[f"{band}_anom"], label=f"{band} anomaly")
+        ax.plot(vod_ts.index.get_level_values('Epoch'), vod_ts[f"{band}"], label=f"{band}")
+    myFmt = mdates.DateFormatter('%d-%b')
+    ax.xaxis.set_major_formatter(myFmt)
+    ax.set_ylabel('GNSS-VOD (L1)')
+    ax.legend()
+    plt.title(f'GNSS-VOD anomaly at {station} {year}-{doy}')
+    plt.savefig(FIG / f"vod_anomaly_{band}_{station}.png", dpi=300)
+    plt.show()
+    
 # -----------------------------------
 """
 Main Features:
@@ -106,6 +191,7 @@ print(vod.isna().mean() * 100)
 # -----------------------------------
 # hemi grid
 
+# todo: detach this into anomaly_type == "phi_theta"
 # intialize hemispheric grid
 hemi = gv.hemibuild(angular_resolution)
 # get patches for plotting later
@@ -130,8 +216,23 @@ if anomaly_type == "phi_theta":
     vod_anom = vod.join(vod_avg, on='CellID')
     for band in band_ids:
         vod_anom[f"{band}_anom"] = vod_anom[band] - vod_anom[f"{band}_mean"]
-        
+    vod_ts = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).mean()
+    for band in band_ids:
+        vod_ts[f"{band}_anom"] = vod_ts[f"{band}_anom"] + vod_ts[f"{band}"].mean()
+    if plot:
+        plot_anomaly(vod_ts, band_ids, figsize=(6, 4))
+elif anomaly_type == "phi_theta_sv":
+    raise NotImplementedError("phi_theta_sv is not implemented yet")
+else:
+    raise ValueError(f"Unknown anomaly type: {anomaly_type}")
 
+# -----------------------------------
+# Save VOD time series to NetCDF file
+save_vod_timeseries(
+    vod_ts,
+    f"vod_timeseries_{station}",
+    overwrite=overwrite
+)
 
 # -----------------------------------
 # legacy
