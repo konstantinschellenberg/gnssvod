@@ -9,7 +9,7 @@
   - using `convbin`, only nav file is created, no obs. Even on explicit request
   - RINEX files from Sami don't contain SNR in both, before and after DOY 150 
 
-
+`urllib.error.URLError: <urlopen error [Errno 104] Connection reset by peer>`
 ## Todos
 
 - [x] Make Binex converter

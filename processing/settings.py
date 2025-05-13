@@ -43,16 +43,16 @@ tower_station = f"{station}1_Twr"
 # script
 unzipping_run = False
 binex2rinex_run = False
-one_dataset_run = False
-both_datasets_run = True
+one_dataset_run = True
+both_datasets_run = False
 
 # options
 binex2rinex_driver = "teqc"  # or "convbin"
 single_station_to_be_preprocessed = ground_station  # or tower_station
 save_orbit = False  # save orbit files
 output_results_locally = False
-time_selection = "all_per_year"  # or "one_day" or "all_per_year"
-overwrite = True
+time_selection = "one_day"  # or "one_day" or "all_per_year"
+overwrite = False
 
 # example year
 year = 2024
