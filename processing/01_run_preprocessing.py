@@ -5,11 +5,15 @@ import os
 from pathlib import Path
 
 import gnssvod as gv
-from definitions import FIG, DATA, ROOT, get_repo_root, AUX, GROUND, TOWER
+from definitions import FIG, DATA, ROOT, ZIP, get_repo_root, AUX, GROUND, TOWER
 from gnssvod.geodesy.coordinate import ell2cart
+from gnssvod.io.bin2rin import bin2rin
+from gnssvod.io.unpack_zip import unpack_gz_files
+from gnssvod.io.preprocess import preprocess_parallel
 
 from datetime import datetime
 import calendar
+
 
 def get_doys_of_month(year: int, month: int) -> list[int]:
     """
@@ -33,50 +37,50 @@ def get_doys_of_month(year: int, month: int) -> list[int]:
         doys.append(date.timetuple().tm_yday)
     return doys
 
+
+# -----------------------------------
+# -----------------------------------
+# -----------------------------------
+# SETTINGS
+# -----------------------------------
+
+# script
+unzipping_run = False
+binex2rinex_run = False
+one_dataset_run = True
+both_datasets_run = False
+
+# options
+binex2rinex_driver = "teqc"  # or "convbin"
+
+# example file
+year = 2024
+doy = 122
+
+# -----------------------------------
+
 def main():
     
     # -----------------------------------
     # unzipping
-    zip_archive = ROOT / 'zip_archive'
-
-    testdir = DATA / "test"
     
-    # if not (DATA / GROUND).exists():
-    #     unpack_gz_files(search_dir=zip_archive / GROUND, out_dir=DATA / GROUND)
-    # if not (DATA / TOWER).exists():
-    #     unpack_gz_files(search_dir=zip_archive / TOWER, out_dir=DATA / TOWER)
+    if unzipping_run:
+        if not (DATA / GROUND).exists():
+            unpack_gz_files(search_dir=ZIP / GROUND, out_dir=DATA / GROUND)
+        if not (DATA / TOWER).exists():
+            unpack_gz_files(search_dir=ZIP / TOWER, out_dir=DATA / TOWER)
     
     # -----------------------------------
     # binex to rinex
     
-    """
-    Use RTKLIB to convert BINEX to RINEX
-    
-    Installation:
-    wget https://github.com/tomojitakasu/RTKLIB/archive/refs/tags/2.4.3.b34L-pre0.tar.gz
-    tar -xzf 2.4.3.b34L-pre0.tar.gz
-    
-    cd app/convbin
-    make
-    sudo make install
-    
-    convbin is now an executable.
-    """
-    
-    # TOWER
-    # bin2rin(search_dir=DATA / TOWER, out_dir=DATA / TOWER, overwrite=False, num_workers=18)
-    # GROUND
-    # bin2rin(search_dir=DATA / GROUND, out_dir=DATA / GROUND, overwrite=False, num_workers=18)
+    if binex2rinex_run:
+        # GROUND
+        bin2rin(search_dir=DATA / GROUND, driver=binex2rinex_driver, out_dir=DATA / GROUND, overwrite=False, num_workers=18)
+        # TOWER
+        bin2rin(search_dir=DATA / TOWER, driver=binex2rinex_driver, out_dir=DATA / TOWER, overwrite=False, num_workers=18)
     
     # -----------------------------------
-    # indexing
-    
-    # example file
-    year = 2022
-    doy = 122
-    
-    # month = 5
-    # doys = get_doys_of_month(year, month)
+    # settings
     
     # search pattern needs to be glob-compatible
     all_per_year = f"SEPT???[a-z].{year % 100:02d}.obs"
@@ -100,12 +104,11 @@ def main():
     # -----------------------------------
     # Process 1 dataset
     
-    one_dataset = True
-    if one_dataset:
+    if one_dataset_run:
         # testdir = DATA / "test"
-        station = "MOz1_Twr"
-        filepattern = {station: str(DATA / GROUND / search_horizont["one_day"])}
-        outpattern = {station: str(DATA / GROUND)}
+        station = "MOz1_Grnd"
+        filepattern = {station: str(DATA / TOWER / search_horizont["one_day"])}
+        outpattern = {station: str(DATA / TOWER)}
         
         args = {
             'filepattern': filepattern,
@@ -118,13 +121,14 @@ def main():
             'outputresult': True,
             'num_workers': 15,
         }
-        result = gv.preprocess(**args)
-        
+        # result = gv.preprocess(**args)
+        result = preprocess_parallel(**args)
+
         # and show data frame
         res = result[station][0].observation
         res.columns
         
-        res['S1C']
+        res['S1']
         #print percentage of NaN values per column
         print(res.isna().mean() * 100)
         
@@ -132,16 +136,16 @@ def main():
         res = res.reindex(sorted(res.columns), axis=1)
         
         #make a barplot of means per col
-        res.mean().plot(kind='bar', figsize=(10, 6))
+        res.mean().plot(kind='bar', figsize=(6, 4))
         from matplotlib import pyplot as plt
+        plt.tight_layout()
         plt.show()
         
 
     # -----------------------------------
-    # batch processing
+    # batch processing of both datasets
 
-    both_datasets = False
-    if both_datasets:
+    if both_datasets_run:
         pattern = {'MOz1_Grnd': str(DATA / GROUND / one_day),
                    'MOz1_Twr': str(DATA / TOWER / one_day)}
         outputdir = {'MOz1_Grnd': str(DATA / GROUND),

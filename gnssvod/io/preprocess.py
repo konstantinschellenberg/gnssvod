@@ -13,6 +13,7 @@ import xarray as xr
 import tempfile
 import fnmatch
 from pathlib import Path
+import concurrent.futures
 from typing import Union, Literal, Any
 from gnssvod.io.io import Observation
 from gnssvod.io.readFile import read_obsFile
@@ -23,22 +24,6 @@ from gnssvod.funcs.constants import _system_name
 #-------------------------------------------------------------------------
 #----------------- FILE SELECTION AND BATCH PROCESSING -------------------
 #-------------------------------------------------------------------------
-import os
-import glob
-import numpy as np
-import pandas as pd
-import xarray as xr
-import tempfile
-import fnmatch
-from pathlib import Path
-import concurrent.futures
-from typing import Union, Literal, Any
-from gnssvod.io.io import Observation
-from gnssvod.io.readFile import read_obsFile
-from gnssvod.io.exporters import export_as_nc
-from gnssvod.position.interpolation import sp3_interp_fast
-from gnssvod.position.position import gnssDataframe
-from gnssvod.funcs.constants import _system_name
 
 
 def process_single_file(file_info, keepvars, interval, orbit, aux_path, approx_position,
@@ -88,6 +73,168 @@ def process_single_file(file_info, keepvars, interval, orbit, aux_path, approx_p
     return (station_name, x) if outputresult else None
 
 
+def preprocess_parallel(filepattern: dict,
+                        orbit: bool = True,
+                        interval: Union[str, pd.Timedelta, None] = None,
+                        keepvars: Union[list, None] = None,
+                        outputdir: Union[dict, None] = None,
+                        overwrite: bool = False,
+                        encoding: Union[None, Literal['default'], dict] = 'default',
+                        outputresult: bool = False,
+                        aux_path: Union[str, None] = None,
+                        approx_position: list[float] = None,
+                        num_workers: int = None,
+                        chunk_size: int = None) -> dict[Any, list[Observation]]:
+    """
+    Reads and processes structured lists of RINEX observation files in parallel.
+
+    Parameters same as preprocess() plus:
+
+    num_workers: int (optional)
+        Number of parallel workers to use. If None, uses the number of CPU cores.
+    chunk_size: int (optional)
+        Number of files to process in each batch. Defaults to num_workers if None.
+    """
+    # Set up temporary directory if necessary
+    if orbit and (aux_path is None):
+        tmp_folder = tempfile.TemporaryDirectory()
+        aux_path = tmp_folder.name
+        print(f"Created a temporary directory at {aux_path}")
+    else:
+        tmp_folder = None
+    
+    # If no chunk_size specified, use num_workers
+    if chunk_size is None and num_workers is not None:
+        chunk_size = num_workers
+    elif chunk_size is None:
+        chunk_size = os.cpu_count() or 1
+    
+    # Grab all files matching the patterns
+    filelist = get_filelist(filepattern)
+    
+    # Prepare task list for parallel processing
+    all_tasks = []
+    
+    for station_name, files in filelist.items():
+        # Checking which files will be skipped (if necessary)
+        if (not overwrite) and (outputdir is not None):
+            files_to_skip = get_filelist({station_name: f"{outputdir[station_name]}*.nc"})
+            files_to_skip = [os.path.basename(x) for x in files_to_skip[station_name]]
+        else:
+            files_to_skip = []
+        
+        # Add each file as a task if it shouldn't be skipped
+        for filename in files:
+            out_name = os.path.splitext(os.path.basename(filename))[0] + '.nc'
+            if out_name in files_to_skip:
+                print(f"{out_name} already exists, skipping.. (pass overwrite=True to overwrite)")
+                continue
+            
+            # Add to task list
+            all_tasks.append((station_name, filename, out_name))
+    
+    # Initialize results dictionary
+    out = {station: [] for station in filelist.keys()}
+    
+    # Process in chunks to avoid simultaneous orbit file access
+    for i in range(0, len(all_tasks), chunk_size):
+        chunk = all_tasks[i:i + chunk_size]
+        print(f"Processing chunk {i // chunk_size + 1}/{(len(all_tasks) + chunk_size - 1) // chunk_size}")
+        
+        # Pre-download orbit data if needed
+        if orbit:
+            print("Preparing orbit data for this chunk...")
+            orbit_data_dict = {}
+            
+            for task in chunk:
+                station_name, filename, _ = task
+                # Read file to get time range
+                try:
+                    x = read_obsFile(filename)
+                    start_time = min(x.observation.index.get_level_values('Epoch'))
+                    end_time = max(x.observation.index.get_level_values('Epoch'))
+                    
+                    # Create a key based on date and interval
+                    date_key = start_time.date()
+                    interval_key = x.interval
+                    
+                    if (date_key, interval_key) not in orbit_data_dict:
+                        # Download orbit data for this date/interval
+                        print(f"Downloading orbit data for {date_key}, interval {interval_key}s")
+                        sp3_interp_fast(start_time, end_time, interval=interval_key, aux_path=aux_path)
+                except Exception as e:
+                    print(f"Error preparing orbit data for {filename}: {e}")
+            
+            print(f"Orbit data prepared for {len(orbit_data_dict)} date/interval combinations")
+        
+        # Process files in parallel
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks in this chunk
+            futures = {}
+            
+            for task in chunk:
+                station_name, filename, out_name = task
+                
+                # We can't pass the orbit_data_dict to the subprocess directly,
+                # so we'll still calculate it in each process
+                futures[executor.submit(
+                    process_single_file,
+                    task,
+                    keepvars,
+                    interval,
+                    orbit,
+                    aux_path,
+                    approx_position,
+                    outputdir,
+                    encoding,
+                    outputresult
+                )] = task
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                station_name = task[0]
+                try:
+                    result = future.result()
+                    if result is not None:  # if outputresult=True
+                        station, obs = result
+                        out[station].append(obs)
+                except Exception as e:
+                    print(f"Error processing {task[1]}: {e}")
+    
+    # Clean up temporary directory if one exists
+    if tmp_folder is not None:
+        tmp_folder.cleanup()
+        print(f"Removed the temporary directory at {aux_path}")
+    
+    if outputresult:
+        return out
+    else:
+        return
+    
+    
+def subset_vars(df: pd.DataFrame,
+                keepvars: list,
+                force_epoch_system: bool = True) -> pd.DataFrame:
+    # find all matches for all elements of keepvars
+    keepvars = np.concatenate([fnmatch.filter(df.columns.tolist(),x) for x in keepvars])
+    # subselect those of the required columns that are present 
+    tokeep = np.intersect1d(keepvars,df.columns.tolist())
+    # + always keep 'epoch' and 'SYSTEM' as they are required for calculating azimuth and elevation
+    if force_epoch_system:
+        tokeep = np.unique(np.concatenate((keepvars,['epoch','SYSTEM'])))
+    else:
+        tokeep = np.unique(keepvars)
+    # find columns not to keep
+    todrop = np.setdiff1d(df.columns.tolist(),tokeep)
+    # drop unneeded columns
+    if len(todrop)>0:
+        df = df.drop(columns=todrop)
+    # drop rows for which all of the required vars are NA
+    df = df.dropna(how='all')
+    return df
+
+
 def preprocess(filepattern: dict,
                orbit: bool = True,
                interval: Union[str, pd.Timedelta, None] = None,
@@ -97,10 +244,9 @@ def preprocess(filepattern: dict,
                encoding: Union[None, Literal['default'], dict] = 'default',
                outputresult: bool = False,
                aux_path: Union[str, None] = None,
-               approx_position: list[float] = None,
-               num_workers: int = None) -> dict[Any, list[Observation]]:
+               approx_position: list[float] = None) -> dict[Any, list[Observation]]:
     """
-    Reads and processes structured lists of RINEX observation files in parallel.
+    Reads and processes structured lists of RINEX observation files.
 
     Parameters
     ----------
@@ -155,13 +301,11 @@ def preprocess(filepattern: dict,
         'orbit' option is True.
         To convert geographic coordinates (lat, lon, h) to cartesian (X,Y,Z) use gnssvod.geodesy.coordinate.ell2cart(lat,lon,h).
 
-    num_workers: int (optional)
-        Number of parallel workers to use. If None, uses the number of CPU cores.
-
     Returns
     -------
     If outputresult = True, returns a dictionary. There is one key per station name and each item contains the GNSS observation object read
     from each input RINEX file. For example output={'station1':[gnssvod.io.io.Observation,gnssvod.io.io.Observation,...]}
+
     """
     # set up temporary directory if necessary
     if orbit and (aux_path is None):
@@ -170,14 +314,14 @@ def preprocess(filepattern: dict,
         print(f"Created a temporary directory at {aux_path}")
     else:
         tmp_folder = None
-    
     # grab all files matching the patterns
     filelist = get_filelist(filepattern)
     
-    # Prepare task list for parallel processing
-    all_tasks = []
-    
-    for station_name, files in filelist.items():
+    out = dict()
+    for item in filelist.items():
+        station_name = item[0]
+        filelist = item[1]
+        
         # checking which files will be skipped (if necessary)
         if (not overwrite) and (outputdir is not None):
             # gather all files that already exist in the outputdir
@@ -186,50 +330,67 @@ def preprocess(filepattern: dict,
         else:
             files_to_skip = []
         
-        # Add each file as a task if it shouldn't be skipped
-        for filename in files:
+        # for each file
+        result = []
+        for i, filename in enumerate(filelist):
+            # determine the name of the output file that will be saved at the end of the loop
             out_name = os.path.splitext(os.path.basename(filename))[0] + '.nc'
+            # if the name of the saved output file is in the files to skip, skip processing
             if out_name in files_to_skip:
                 print(f"{out_name} already exists, skipping.. (pass overwrite=True to overwrite)")
-                continue
+                continue  # skip remainder of loop and go directly to next filename
             
-            # Add to task list
-            all_tasks.append((station_name, filename, out_name))
-    
-    # Initialize results dictionary
-    out = {station: [] for station in filelist.keys()}
-    
-    # todo: load all required orbit data in advance!
-    
-    # Process files in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all tasks
-        futures = {
-            executor.submit(
-                process_single_file,
-                task,
-                keepvars,
-                interval,
-                orbit,
-                aux_path,
-                approx_position,
-                outputdir,
-                encoding,
-                outputresult
-            ): task for task in all_tasks
-        }
+            # read in the file
+            x = read_obsFile(filename)
+            print(f"Processing {len(x.observation):n} individual observations")
+            
+            # only keep required vars
+            if keepvars is not None:
+                x.observation = subset_vars(x.observation, keepvars)
+                # update the observation_types list
+                x.observation_types = x.observation.columns.to_list()
+            
+            # resample if required
+            if interval is not None:
+                x = resample_obs(x, interval)
+            
+            # calculate Azimuth and Elevation if required
+            if orbit:
+                # use a prescribed position if one was passed as argument
+                if approx_position is not None:
+                    x.approx_position = approx_position
+                # check that an approximate position exists before proceeding
+                if (x.approx_position == [0, 0, 0]) or (x.approx_position is None):
+                    raise ValueError(
+                        "Missing an approximate antenna position. Provide the argument 'approx_position' to preprocess()")
+                print(f"Calculating Azimuth and Elevation")
+                # note: orbit cannot be parallelized easily because it
+                # downloads and unzips third-party files in the current directory
+                if not 'orbit_data' in locals():
+                    # if there is no previous orbit data, the orbit data is returned as well
+                    x, orbit_data = add_azi_ele(x, aux_path=aux_path)
+                else:
+                    # on following iterations the orbit data is tentatively recycled to reduce computational time
+                    x, orbit_data = add_azi_ele(x, orbit_data, aux_path=aux_path)
+            
+            # make sure we drop any duplicates
+            x.observation = x.observation[~x.observation.index.duplicated(keep='first')]
+            
+            # store result in memory if required
+            if outputresult:
+                result.append(x)
+            
+            # write to file if required
+            if outputdir is not None:
+                outpath = str(Path(outputdir[station_name], out_name))
+                export_as_nc(ds=x.to_xarray(),
+                             outpath=outpath,
+                             encoding=encoding)
+                print(f"Saved {len(x.observation):n} individual observations in {outpath}")
         
-        # Process results as they complete
-        for future in concurrent.futures.as_completed(futures):
-            task = futures[future]
-            station_name = task[0]
-            try:
-                result = future.result()
-                if result is not None:  # if outputresult=True
-                    station, obs = result
-                    out[station].append(obs)
-            except Exception as e:
-                print(f"Error processing {task[1]}: {e}")
+        # store station in memory if required
+        if outputresult:
+            out[station_name] = result
     
     # clean up temporary directory if one exists
     if tmp_folder is not None:
@@ -240,27 +401,6 @@ def preprocess(filepattern: dict,
         return out
     else:
         return
-
-def subset_vars(df: pd.DataFrame,
-                keepvars: list,
-                force_epoch_system: bool = True) -> pd.DataFrame:
-    # find all matches for all elements of keepvars
-    keepvars = np.concatenate([fnmatch.filter(df.columns.tolist(),x) for x in keepvars])
-    # subselect those of the required columns that are present 
-    tokeep = np.intersect1d(keepvars,df.columns.tolist())
-    # + always keep 'epoch' and 'SYSTEM' as they are required for calculating azimuth and elevation
-    if force_epoch_system:
-        tokeep = np.unique(np.concatenate((keepvars,['epoch','SYSTEM'])))
-    else:
-        tokeep = np.unique(keepvars)
-    # find columns not to keep
-    todrop = np.setdiff1d(df.columns.tolist(),tokeep)
-    # drop unneeded columns
-    if len(todrop)>0:
-        df = df.drop(columns=todrop)
-    # drop rows for which all of the required vars are NA
-    df = df.dropna(how='all')
-    return df
 
 def resample_obs(obs: Observation, interval: str) -> Observation:
     # list all variables except SYSTEM and epoch as these are handled differently
