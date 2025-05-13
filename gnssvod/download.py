@@ -22,6 +22,44 @@ __all__ = ["get_rinex", "get_rinex3", "get_navigation", "get_clock", "get_sp3", 
 
 server_root = 'ftp://gssc.esa.int/gnss'
 
+def ping_ftp():
+    """ To check if the ftp server is reachable """
+    try:
+        connection = http.client.HTTPConnection("gssc.esa.int", timeout=5)
+        connection.request("HEAD", "/")
+        connection.close()
+        return True
+    except:
+        connection.close()
+        return False
+
+
+import time
+import random
+from urllib.error import URLError
+
+
+def download_with_retry(url_path, local_path, max_retries=5, initial_delay=1):
+    """Download a file with exponential backoff retry logic"""
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
+                          desc=Path(local_path).name) as t:
+                url.urlretrieve(url_path, local_path, reporthook=t.update_to)
+            return True  # Success
+        except URLError as e:
+            attempt += 1
+            if attempt >= max_retries:
+                print(f"Failed to download after {max_retries} attempts: {e}")
+                raise
+            
+            # Calculate delay with exponential backoff and jitter
+            delay = initial_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+            print(f"Connection error: {e}. Retrying in {delay:.1f} seconds... (Attempt {attempt}/{max_retries})")
+            time.sleep(delay)
+
+
 def check_internet():
     """ To check if there is an internet connection for FTP downloads """
     connection = http.client.HTTPConnection("www.google.com", timeout=5)
@@ -320,13 +358,11 @@ def get_sp3(sp3_path: str) -> None:
     # attempt download
     try:
         print('Downloading:', zipped_path.name, end = '')
-        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1, desc=zipped_path.name) as t:
-            url.urlretrieve(ftp, zipped_path, reporthook=t.update_to)
+        download_with_retry(ftp, zipped_path)
         print(' | Download completed for', zipped_path.name)
         decompress_on_disk(zipped_path, delete=True)
-    except:
-        print(" | Requested file", zipped_path.name, "cannot be not found!")
-
+    except Exception as e:
+        print(f"Failed to download {zipped_path.name}: {e}")
     return
     
 def get_clock(clock_path):
