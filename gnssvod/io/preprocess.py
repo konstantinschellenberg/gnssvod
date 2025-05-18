@@ -5,6 +5,7 @@ gather_stations merges observations from sites according to specified pairing ru
 """
 # ===========================================================
 # ========================= imports =========================
+import re
 import os
 import glob
 import numpy as np
@@ -21,6 +22,7 @@ from gnssvod.io.exporters import export_as_nc
 from gnssvod.position.interpolation import sp3_interp_fast
 from gnssvod.position.position import gnssDataframe
 from gnssvod.funcs.constants import _system_name
+from processing.settings import date_to_skip
 #-------------------------------------------------------------------------
 #----------------- FILE SELECTION AND BATCH PROCESSING -------------------
 #-------------------------------------------------------------------------
@@ -147,10 +149,18 @@ def preprocess(filepattern: dict,
         for i, filename in enumerate(filelist):
             # determine the name of the output file that will be saved at the end of the loop
             out_name = os.path.splitext(os.path.basename(filename))[0] + '.nc'
-            # if the name of the saved output file is in the files to skip, skip processing
+            # year = regex \.\d{2}\.
+            year = "20" + re.search(r'(?<=\.)\d{2}(?=\.)', os.path.basename(filename)).group(0)
+            doy = re.search(r'\d{3}', os.path.basename(filename)).group(0)
+            # if the name of the saved output file is in the files to skip, skip processing            # if the name of the saved output file is in the files to skip, skip processing
             if out_name in files_to_skip:
                 print(f"{out_name} already exists, skipping.. (pass overwrite=True to overwrite)")
                 continue  # skip remainder of loop and go directly to next filename
+            
+            # check if the file is in the list of files to skip
+            if (int(year), int(doy)) in date_to_skip:
+                print(f"{out_name} is in the list of files to skip, skipping..")
+                continue
             
             # read in the file
             x = read_obsFile(filename)
@@ -284,7 +294,8 @@ def gather_stations(filepattern: dict,
                     keepvars: Union[list,None] = None,
                     outputdir: Union[dict, None] = None,
                     encoding: Union[None, Literal['default'], dict] = None,
-                    outputresult: bool = False) -> dict[Any,pd.DataFrame]:
+                    outputresult: bool = False,
+                    mergebands: bool = False) -> dict[Any,pd.DataFrame]:
     """
     Merges observations from different sites according to specified pairing rules. The new dataframe will contain 
     a new index level corresponding to each site, with keys corresponding to station names.
@@ -330,6 +341,9 @@ def gather_stations(filepattern: dict,
 
     outputresult: bool (optional)
         If True, observation objects will also be returned as a dictionary
+        
+    mergebands: bool (optional)
+        If True, the subbands (S1X) will be all merged into mother bands (S1).
         
     Returns
     -------
@@ -390,6 +404,43 @@ def gather_stations(filepattern: dict,
                         print(f"No observations left after subsetting columns (argument 'keepvars')")
                         continue
                 
+                # Merge subbands if requested
+                if mergebands:
+                    print(f'Merging signal bands')
+                    # Get all column names
+                    all_cols = iout.columns.tolist()
+                    
+                    # Define general bands
+                    general_bands = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9']
+                    existing_bands = [band for band in general_bands if band in all_cols]
+                    
+                    # Process each general band
+                    for band in existing_bands:
+                        # Find all subband columns (e.g., S1C, S1X)
+                        subband_cols = [col for col in all_cols if col.startswith(band) and col != band]
+                        
+                        if not subband_cols:
+                            continue
+                        
+                        # For each row where the general band is NaN
+                        mask = iout[band].isna()
+                        
+                        if not mask.any():
+                            continue
+                        
+                        # For rows with NaN in general band, try to fill with subband values
+                        for idx in iout[mask].index:
+                            for subband_col in subband_cols:
+                                if pd.notna(iout.at[idx, subband_col]):
+                                    iout.at[idx, band] = iout.at[idx, subband_col]
+                                    break
+                    
+                    # Remove all subband columns (keep only general bands and non-S columns)
+                    cols_to_drop = [col for col in all_cols if col.startswith('S') and
+                                    len(col) > 2 and col not in general_bands]
+                    
+                    iout = iout.drop(columns=cols_to_drop)
+                    
                 # output the data as .nc if required
                 if outputdir:
                     ioutputdir = outputdir[case_name]
