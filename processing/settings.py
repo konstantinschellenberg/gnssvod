@@ -7,36 +7,27 @@ import pandas as pd
 
 from gnssvod.geodesy.coordinate import ell2cart
 
-def get_doys_of_month(year: int, month: int) -> list[int]:
-    """
-    Get all Days of Year (DOYs) for a given month.
-
-    Parameters
-    ----------
-    year : int
-        The year for which to calculate DOYs.
-    month : int
-        The month for which to calculate DOYs.
-
-    Returns
-    -------
-    list[int]
-        A list of DOYs for the given month.
-    """
-    doys = []
-    for day in range(1, calendar.monthrange(year, month)[1] + 1):
-        date = datetime(year, month, day)
-        doys.append(date.timetuple().tm_yday)
-    return doys
-
 # -----------------------------------
-# -----------------------------------
-# SETTINGS (user) - 01_run_preprocessing.py
-# -----------------------------------
+# SETTINGS (user) - general
 
 station = 'MOz'
 ground_station = f"{station}1_Grnd"
 tower_station = f"{station}1_Twr"
+
+overwrite = False  # overwrite existing files
+output_results_locally = False  # save results locally
+time_selection = "all_per_year"  # or "one_day" or "all_per_year"
+
+# example year
+year = 2024
+# example file
+doy = 150
+
+date_to_skip = [(2024, 344), (2024, 174), (2024, 173)]
+
+# -----------------------------------
+# SETTINGS (user) - 01_run_preprocessing.py
+# -----------------------------------
 
 # script
 unzipping_run = False
@@ -48,22 +39,12 @@ both_datasets_run = False
 binex2rinex_driver = "teqc"  # or "convbin"
 single_station_to_be_preprocessed = ground_station  # or tower_station
 save_orbit = True  # save orbit files
-output_results_locally = True  # save results locally
-time_selection = "one_day"  # or "one_day" or "all_per_year"
-overwrite = True
-
-# example year
-year = 2024
-# example file
-doy = 150
-
-date_to_skip = [(2024, 344), (2024, 174), (2024, 173)]
 
 # -----------------------------------
 # SETTINGS (user) – 02_gather_stations.py
 
-timeintervals_periods = 1
-timeintervals_freq = 'D'
+timeintervals_periods = None  # None or int. If None, it will be calculated. If int, it will be used as is.
+timeintervals_freq = '1h'  # hourly file saving is more efficient
 timeintervals_closed = 'left'
 
 # -----------------------------------
@@ -73,7 +54,7 @@ bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']}
 angular_resolution = 2  # degrees
 temporal_resolution = 30  # minutes
 anomaly_type = "phi_theta"  # or "phi_theta_sv"
-plot = False
+plot = True
 
 # -----------------------------------
 # settings (static)
@@ -84,7 +65,21 @@ all_per_year = f"SEPT???[a-z].{year % 100:02d}"
 one_day = f"SEPT{doy:03d}[a-z].{year % 100:02d}"
 
 date = pd.to_datetime(f"{year}-{doy}", format='%Y-%j')
-timeintervals = pd.interval_range(start=date,
+if timeintervals_periods == None:
+    # get the period of time intervals time_range = periods * freq
+    if time_selection == "one_day":
+        # get datetime from doy
+        startdate = pd.to_datetime(f"{year}-{doy}", format='%Y-%j')
+        timedelta = pd.Timedelta(days=1)
+    elif time_selection == "all_per_year":
+        startdate = pd.to_datetime(f"{year}-01-01")
+        timedelta = pd.to_datetime(f"{year}-12-31") - startdate
+    periods = timedelta.total_seconds() / pd.Timedelta(timeintervals_freq).total_seconds()
+    timeintervals_periods = int(periods)
+    
+    
+# create time intervals
+timeintervals = pd.interval_range(start=startdate,
                                   periods=timeintervals_periods,
                                   freq=timeintervals_freq,
                                   closed=timeintervals_closed)

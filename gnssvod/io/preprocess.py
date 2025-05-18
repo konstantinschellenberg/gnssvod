@@ -289,13 +289,14 @@ def get_filelist(filepatterns: dict) -> dict:
 #-------------------------------------------------------------------------- 
 
 def gather_stations(filepattern: dict,
-                    pairings: dict,
-                    timeintervals: Union[pd.IntervalIndex,None] = None,
-                    keepvars: Union[list,None] = None,
-                    outputdir: Union[dict, None] = None,
-                    encoding: Union[None, Literal['default'], dict] = None,
-                    outputresult: bool = False,
-                    mergebands: bool = False) -> dict[Any,pd.DataFrame]:
+                   pairings: dict,
+                   timeintervals: Union[pd.IntervalIndex,None] = None,
+                   keepvars: Union[list,None] = None,
+                   outputdir: Union[dict, None] = None,
+                   encoding: Union[None, Literal['default'], dict] = None,
+                   outputresult: bool = False,
+                   mergebands: bool = False,
+                   n_workers: int = None) -> dict[Any,pd.DataFrame]:
     """
     Merges observations from different sites according to specified pairing rules. The new dataframe will contain 
     a new index level corresponding to each site, with keys corresponding to station names.
@@ -344,6 +345,9 @@ def gather_stations(filepattern: dict,
         
     mergebands: bool (optional)
         If True, the subbands (S1X) will be all merged into mother bands (S1).
+    
+    n_workers: int, optional
+        Number of parallel workers. Default (None) uses CPU count.
         
     Returns
     -------
@@ -351,121 +355,181 @@ def gather_stations(filepattern: dict,
     pd.Dataframe containing the paired data.
     
     """
-    # get all files for all stations
+    # Get files and extract epochs
     filenames = get_filelist(filepattern)
     print(f'Extracting Epochs from files')
-    # extract only Epoch timestamps from all files (should be fast enough)
-    epochs = {key:[xr.open_mfdataset(x)['Epoch'].values for x in items] for key,items in filenames.items()}
-    # get min and max timestamp for each file (will be used to select which files to read later)
-    epochs_min = {key:[np.min(x) for x in items] for key,items in epochs.items()}
-    epochs_max = {key:[np.max(x) for x in items] for key,items in epochs.items()}
+    epochs = {key: [xr.open_mfdataset(x)['Epoch'].values for x in items] for key, items in filenames.items()}
+    epochs_min = {key: [np.min(x) for x in items] for key, items in epochs.items()}
+    epochs_max = {key: [np.max(x) for x in items] for key, items in epochs.items()}
     
-    result=dict()
+    # Set default timeintervals if not provided
+    if timeintervals is None:
+        # Use the earliest min and latest max across all stations
+        all_mins = [min(times) for times in epochs_min.values()]
+        all_maxes = [max(times) for times in epochs_max.values()]
+        overall_min = pd.Timestamp(min(all_mins))
+        overall_max = pd.Timestamp(max(all_maxes))
+        timeintervals = pd.interval_range(start=overall_min, end=overall_max)
+    
+    # Create output directories if needed
+    if outputdir:
+        for dir_path in outputdir.values():
+            Path(dir_path).mkdir(parents=True, exist_ok=True)
+    
+    result = dict()
+    
+    # Process each case
     for case_name, station_names in pairings.items():
-        out = []
         print(f'----- Processing {case_name}')
-        if timeintervals is None:
-            timeintervals = pd.interval_range(start=epochs_min, end=epochs_max)
-        for interval in timeintervals:
-            print(f'-- Processing interval {interval}')
-            iout = []
-            # gather all data required for that interval
-            for station_name in station_names:
-                # check which files have data that overlaps with the desired time intervals
-                isin = [interval.overlaps(pd.Interval(left=pd.Timestamp(tmin),
-                    right=pd.Timestamp(tmax))) for tmin,tmax in zip(epochs_min[station_name],epochs_max[station_name])]
-                print(f'Found {sum(isin)} file(s) for {station_name}')
-                if sum(isin)>0:
-                    print(f'Reading')
-                    # open those files and convert them to pandas dataframes
-                    idata = [xr.open_mfdataset(x).to_dataframe().dropna(how='all') \
-                            for x in np.array(filenames[station_name])[isin]]
-                    # concatenate
-                    idata = pd.concat(idata)
-                    # keep only data falling within the interval
-                    idata = idata.loc[[x in interval for x in idata.index.get_level_values('Epoch')]]
-                    # drop duplicates and sort the dataframes
-                    idata = idata[~idata.index.duplicated()].sort_index(level=['Epoch','SV'])
-                    # add the station data in the iout list
-                    iout.append(idata)
-                else:
-                    iout.append(pd.DataFrame())
-                    print(f"No data for station {station_name}.")
-                    continue
-
-            if not all([x.empty for x in iout]):
-                print(f'Concatenating stations')
-                iout = pd.concat(iout, keys=station_names, names=['Station'])
-
-                # only keep required vars and drop potential empty rows
-                if keepvars is not None:
-                    iout = subset_vars(iout,keepvars,force_epoch_system=False)
-                    if len(iout)==0:
-                        print(f"No observations left after subsetting columns (argument 'keepvars')")
-                        continue
+        out = []
+        
+        # Process intervals sequentially or in parallel
+        if n_workers is None or n_workers <= 1:
+            # Sequential processing
+            for interval in timeintervals:
+                try:
+                    data = _process_single_interval(
+                        interval, case_name, station_names,
+                        filenames, epochs_min, epochs_max,
+                        keepvars, mergebands, outputdir, encoding
+                    )
+                    if data is not None and not data.empty:
+                        out.append(data)
+                except Exception as exc:
+                    print(f'Error processing interval {interval}: {exc}')
+        else:
+            # Parallel processing
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                futures = []
+                for interval in timeintervals:
+                    futures.append(
+                        executor.submit(
+                            _process_single_interval,
+                            interval, case_name, station_names,
+                            filenames, epochs_min, epochs_max,
+                            keepvars, mergebands, outputdir, encoding
+                        )
+                    )
                 
-                # Merge subbands if requested
-                if mergebands:
-                    print(f'Merging signal bands')
-                    # Get all column names
-                    all_cols = iout.columns.tolist()
-                    
-                    # Define general bands
-                    general_bands = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9']
-                    existing_bands = [band for band in general_bands if band in all_cols]
-                    
-                    # Process each general band
-                    for band in existing_bands:
-                        # Find all subband columns (e.g., S1C, S1X)
-                        subband_cols = [col for col in all_cols if col.startswith(band) and col != band]
-                        
-                        if not subband_cols:
-                            continue
-                        
-                        # For each row where the general band is NaN
-                        mask = iout[band].isna()
-                        
-                        if not mask.any():
-                            continue
-                        
-                        # For rows with NaN in general band, try to fill with subband values
-                        for idx in iout[mask].index:
-                            for subband_col in subband_cols:
-                                if pd.notna(iout.at[idx, subband_col]):
-                                    iout.at[idx, band] = iout.at[idx, subband_col]
-                                    break
-                    
-                    # Remove all subband columns (keep only general bands and non-S columns)
-                    cols_to_drop = [col for col in all_cols if col.startswith('S') and
-                                    len(col) > 2 and col not in general_bands]
-                    
-                    iout = iout.drop(columns=cols_to_drop)
-                    
-                # output the data as .nc if required
-                if outputdir:
-                    ioutputdir = outputdir[case_name]
-                    print(f'Saving result in {ioutputdir}')
-                    # make destination path
-                    ts = f"{interval.left.strftime('%Y%m%d%H%M%S')}_{interval.right.strftime('%Y%m%d%H%M%S')}"
-                    filename = f"{case_name}_{ts}.nc"
-                    outpath = str(Path(ioutputdir,filename))
-                    # sort dimensions
-                    ds = iout.to_xarray()
-                    ds = ds.sortby(['Epoch','SV','Station'])
-                    # write nc file
-                    export_as_nc(ds = ds,
-                        outpath = outpath,
-                        encoding = encoding)
-                    print(f"Saved {len(iout)} observations in {filename}")
-
-                # add interval in memory if required
-                if outputresult:
-                    out.append(iout)
-            else:
-                print(f"No data at all for that interval, skipping..")
-
-        # store case in memory if required
-        if outputresult and len(out)>0:
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        data = future.result()
+                        if data is not None and not data.empty:
+                            out.append(data)
+                    except Exception as exc:
+                        print(f'Error processing interval: {exc}')
+        
+        # Store results if requested
+        if outputresult and out:
             result[case_name] = pd.concat(out)
-
+    
     return result
+
+
+# Define this as a top-level function outside of gather_stations
+def _process_single_interval(interval, case_name, station_names, filenames, epochs_min, epochs_max,
+                             keepvars, mergebands, outputdir, encoding):
+    """Process a single interval for gather_stations."""
+    print(f'-- Processing interval {interval}')
+    iout = []
+    # gather all data required for that interval
+    for station_name in station_names:
+        # check which files have data that overlaps with the desired time intervals
+        isin = [interval.overlaps(pd.Interval(left=pd.Timestamp(tmin),
+                                              right=pd.Timestamp(tmax))) for tmin, tmax in
+                zip(epochs_min[station_name], epochs_max[station_name])]
+        print(f'Found {sum(isin)} file(s) for {station_name}')
+        if sum(isin) > 0:
+            print(f'Reading')
+            # open those files and convert them to pandas dataframes
+            idata = [xr.open_mfdataset(x).to_dataframe().dropna(how='all') \
+                     for x in np.array(filenames[station_name])[isin]]
+            # concatenate
+            idata = pd.concat(idata)
+            # keep only data falling within the interval
+            idata = idata.loc[[x in interval for x in idata.index.get_level_values('Epoch')]]
+            # drop duplicates and sort the dataframes
+            idata = idata[~idata.index.duplicated()].sort_index(level=['Epoch', 'SV'])
+            # add the station data in the iout list
+            iout.append(idata)
+        else:
+            iout.append(pd.DataFrame())
+            print(f"No data for station {station_name}.")
+            continue
+    
+    if not all([x.empty for x in iout]):
+        print(f'Concatenating stations')
+        iout = pd.concat(iout, keys=station_names, names=['Station'])
+        
+        # only keep required vars and drop potential empty rows
+        if keepvars is not None:
+            iout = subset_vars(iout, keepvars, force_epoch_system=False)
+            if len(iout) == 0:
+                print(f"No observations left after subsetting columns (argument 'keepvars')")
+                return pd.DataFrame()  # Return empty DataFrame
+        
+        # Merge subbands if requested
+        if mergebands:
+            print(f'Merging signal bands')
+            # Get all column names
+            all_cols = iout.columns.tolist()
+            
+            # Define general bands
+            general_bands = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9']
+            existing_bands = [band for band in general_bands if band in all_cols]
+            
+            # Process each general band
+            for band in existing_bands:
+                # Find all subband columns (e.g., S1C, S1X)
+                subband_cols = [col for col in all_cols if col.startswith(band) and col != band]
+                
+                if not subband_cols:
+                    continue
+                
+                # For each row where the general band is NaN
+                mask = iout[band].isna()
+                
+                if not mask.any():
+                    continue
+                
+                # For rows with NaN in general band, try to fill with subband values
+                for idx in iout[mask].index:
+                    for subband_col in subband_cols:
+                        if pd.notna(iout.at[idx, subband_col]):
+                            iout.at[idx, band] = iout.at[idx, subband_col]
+                            break
+            
+            # Remove all subband columns (keep only general bands and non-S columns)
+            cols_to_drop = [col for col in all_cols if col.startswith('S') and
+                            len(col) > 2 and col not in general_bands]
+            
+            # assign float16 to all S columns
+            for col in general_bands:
+                if col in iout.columns:
+                    iout[col] = iout[col].astype("f4")
+                    
+            # assign float16 to Azimuth and Elevation
+            if 'Azimuth' in iout.columns:
+                iout['Azimuth'] = iout['Azimuth'].astype("f4")
+            
+            iout = iout.drop(columns=cols_to_drop)
+        
+        # output the data as .nc if required
+        if outputdir:
+            ioutputdir = outputdir[case_name]
+            print(f'Saving result in {ioutputdir}')
+            # make destination path
+            ts = f"{interval.left.strftime('%Y%m%d%H%M%S')}_{interval.right.strftime('%Y%m%d%H%M%S')}"
+            filename = f"{case_name}_{ts}.nc"
+            outpath = str(Path(ioutputdir, filename))
+            # sort dimensions
+            ds = iout.to_xarray()
+            ds = ds.sortby(['Epoch', 'SV', 'Station'])
+            # write nc file
+            export_as_nc(ds=ds, outpath=outpath, encoding=encoding)
+            print(f"Saved {len(iout)} observations in {filename}")
+        
+        return iout
+    else:
+        print(f"No data at all for that interval, skipping..")
+        return pd.DataFrame()  # Return empty DataFrame
