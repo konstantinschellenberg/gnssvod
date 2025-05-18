@@ -29,8 +29,6 @@ def get_doys_of_month(year: int, month: int) -> list[int]:
         doys.append(date.timetuple().tm_yday)
     return doys
 
-
-# -----------------------------------
 # -----------------------------------
 # -----------------------------------
 # SETTINGS (user) - 01_run_preprocessing.py
@@ -49,15 +47,17 @@ both_datasets_run = False
 # options
 binex2rinex_driver = "teqc"  # or "convbin"
 single_station_to_be_preprocessed = ground_station  # or tower_station
-save_orbit = False  # save orbit files
-output_results_locally = False
+save_orbit = True  # save orbit files
+output_results_locally = True  # save results locally
 time_selection = "one_day"  # or "one_day" or "all_per_year"
-overwrite = False
+overwrite = True
 
 # example year
 year = 2024
 # example file
-doy = 122
+doy = 150
+
+date_to_skip = [(2024, 344), (2024, 174), (2024, 173)]
 
 # -----------------------------------
 # SETTINGS (user) – 02_gather_stations.py

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from download import ping_ftp
+# from download import ping_ftp
 import gnssvod as gv
 from definitions import DATA, ZIP, AUX, GROUND, TOWER
 from gnssvod.io.bin2rin import bin2rin
@@ -13,7 +13,6 @@ suffix = "*.obs"
 # -----------------------------------
 # unzipping
 
-ping_ftp()
 
 if unzipping_run:
     if not (DATA / GROUND).exists():

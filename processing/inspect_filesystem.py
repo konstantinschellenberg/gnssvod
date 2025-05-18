@@ -157,7 +157,7 @@ def plot_file_size_statistics(stats_df, title="File Size Statistics", **kwargs):
 
 def main():
     # Example usage
-    file_format = "*.obs"
+    file_format = "*.bnx"
     tower_stats = analyze_file_sizes(DATA / TOWER, format=file_format)
     print("Tower file statistics:")
     print(tower_stats)

@@ -3,22 +3,34 @@
 ## Notes
 
 - RINEX data worthless, no CN0 data included
-- Ground data (doy 149, 2022) onwards corrupt? no obs file expelled, only nav
+- Ground data (doy 150, 2022) onwards corrupt? no obs file expelled, only nav
 - What happened DOY 150 (2022)?
   - binex file size increases
   - using `convbin`, only nav file is created, no obs. Even on explicit request
   - RINEX files from Sami don't contain SNR in both, before and after DOY 150 
+- Clock file: `GFZ0MGXRAP_20243440000_01D_30S_CLK.CLK` not found: Copied clock file from day before artificially to this date. Workaround for now.
+- Orbit file: `GFZ0MGXRAP_20241740000_01D_05M_ORB.SP3` not found: Copied orbit file from day before artificially to this date. Workaround for now.
+- Clock file: `GFZ0MGXRAP_20241740000_01D_30S_CLK.CLK` not found: Copied clock file from day before artificially to this date. Workaround for now.
+- DOY 24166 (2024) last before a 5-month gap. Why is that? Try to find RINEX. Issue might be the modify data: data been overwritten?
+- Check [RINEX handbook](http://acc.igs.org/misc/rinex304.pdf) for PRN codes
+- Check [Sbas codes](https://media.defense.gov/2016/Jul/26/2001583103/-1/-1/1/PRN%20CODE%20ASSIGNMENT%20PROCESS.PDF)
 
-`urllib.error.URLError: <urlopen error [Errno 104] Connection reset by peer>`
+Anomalous dates
+- 2024 344 (no clock file)
+- 2024 174 (no clock and orbit file)
+
+
 ## Todos
 
 - [x] Make Binex converter
 - [x] Process towards RINEX
 - [x] installed gfzrnx: Does not support BINEX conversion
 - [x] installing teqc
-- [ ] Implement teqc pipeline
-- [ ] Check missing ground obs data
-- [ ] Multiprocessing not yet working: Results differ when redone...
+- [x] Implement teqc pipeline
+- [x] Check missing ground obs data –> using BINEX-RINEX 2.11 to recover
+[//]: # (- [ ] Multiprocessing not yet working: Results differ when redone...)
+- [x] Run all nc calculations (integrate new data)
+- [ ] reduce file size in `GATHER` by merging S?? fields
 
 ## Comm
 - Ask Benjamin L. if they were successful with RINEX proc

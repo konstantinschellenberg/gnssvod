@@ -58,6 +58,7 @@ def download_with_retry(url_path, local_path, max_retries=5, initial_delay=1):
             delay = initial_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
             print(f"Connection error: {e}. Retrying in {delay:.1f} seconds... (Attempt {attempt}/{max_retries})")
             time.sleep(delay)
+    return None
 
 
 def check_internet():
@@ -438,6 +439,8 @@ def get_clock(clock_path):
             print(' | Download completed for', zipped_path.name)
             decompress_on_disk(zipped_path, delete=True)
         except:
+            # skip b/c one file couldNn't be found
+            # logger.warning("Requested file", zipped_path.name, "cannot be not found in FTP server | SKIPPING")
             raise Warning("Requested file", zipped_path.name, "cannot be not found in FTP server | Exiting")
 
 def get_ionosphere(ionFile, directory=os.getcwd()):
