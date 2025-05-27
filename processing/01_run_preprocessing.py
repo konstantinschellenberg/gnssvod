@@ -38,10 +38,10 @@ if one_dataset_run:
     # testdir = DATA / "test"
     if single_station_to_be_preprocessed == ground_station:
         subpath = GROUND
-        path = str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}")
+        path = str(DATA / GROUND / f"{search_horizont["level_0"][time_selection]}{suffix}")
     elif single_station_to_be_preprocessed == tower_station:
         subpath = TOWER
-        path = str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")
+        path = str(DATA / TOWER / f"{search_horizont["level_0"][time_selection]}{suffix}")
     else:
         raise ValueError(f"Unknown station: {single_station_to_be_preprocessed}")
     
@@ -86,8 +86,8 @@ if one_dataset_run:
 # -----------------------------------
 
 if both_datasets_run:
-    pattern = {ground_station: str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}"),
-               tower_station: str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")}
+    pattern = {ground_station: str(DATA / GROUND / f"{search_horizont["level_0"][time_selection]}{suffix}"),
+               tower_station: str(DATA / TOWER / f"{search_horizont["level_0"][time_selection]}{suffix}")}
     outputdir = {ground_station: str(DATA / GROUND),
                  tower_station: str(DATA / TOWER)}
     
@@ -100,6 +100,7 @@ if both_datasets_run:
         'approx_position': pos,
         'aux_path': str(AUX) if save_orbit else None,
         'outputresult': True if output_results_locally else False,
+        'dates_to_skip': dates_to_skip,
     }
     
     res = gv.preprocess(**arg)

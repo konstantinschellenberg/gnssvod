@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import calendar
-from datetime import datetime
 
 import pandas as pd
 
@@ -16,14 +14,14 @@ tower_station = f"{station}1_Twr"
 
 overwrite = False  # overwrite existing files
 output_results_locally = False  # save results locally
-time_selection = "all_per_year"  # or "one_day" or "all_per_year"
+time_selection = "one_day"  # or "one_day" or "all_per_year" or "all_time"
 
 # example year
 year = 2024
 # example file
-doy = 150
+doy = 160
 
-date_to_skip = [(2024, 344), (2024, 174), (2024, 173)]
+dates_to_skip = [(2024, 344), (2024, 174), (2024, 173), (2021, 365)]
 
 # -----------------------------------
 # SETTINGS (user) - 01_run_preprocessing.py
@@ -31,9 +29,9 @@ date_to_skip = [(2024, 344), (2024, 174), (2024, 173)]
 
 # script
 unzipping_run = False
-binex2rinex_run = False
-one_dataset_run = True
-both_datasets_run = False
+binex2rinex_run = True
+one_dataset_run = False
+both_datasets_run = True
 
 # options
 binex2rinex_driver = "teqc"  # or "convbin"
@@ -50,11 +48,27 @@ timeintervals_closed = 'left'
 # -----------------------------------
 # SETTINGS (user) – 03_export_vod.py
 
-bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']}
-angular_resolution = 2  # degrees
+bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
+            # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
+
+angular_resolution = 1  # degrees
 temporal_resolution = 30  # minutes
-anomaly_type = "phi_theta"  # or "phi_theta_sv"
-plot = True
+agg_func = "mean"  # or "median"
+time_interval = ("2022-01-01", "2024-12-31")
+tz = "etc/GMT+6"
+angular_cutoff = 30 # degrees
+
+anomaly_type = "phi_theta_sv"  # or "phi_theta_sv" or "phi_theta"
+plot = True  # set to True to plot results
+
+# -----------------------------------
+# SETTINGS (user) – 04_inspect_vod.py
+
+"""
+Use this time interface for time series selection
+"""
+
+time_subset = [("2024-05-01", "2024-05-30")]  # time interval for inspection
 
 # -----------------------------------
 # settings (static)
@@ -63,6 +77,12 @@ plot = True
 # search pattern needs to be glob-compatible
 all_per_year = f"SEPT???[a-z].{year % 100:02d}"
 one_day = f"SEPT{doy:03d}[a-z].{year % 100:02d}"
+all_time = f"SEPT???[a-z].[0-9][0-9]"
+
+# in %Y%m%d%H%M%S format from year and doy
+one_day_gather = f"{station}_{ pd.to_datetime(f"{year}-{doy}", format='%Y-%j').strftime("%Y%m%d*")}"
+all_year_gather = f"{station}_{year}"
+all_time_gather = f"{station}_*"
 
 date = pd.to_datetime(f"{year}-{doy}", format='%Y-%j')
 if timeintervals_periods == None:
@@ -74,6 +94,9 @@ if timeintervals_periods == None:
     elif time_selection == "all_per_year":
         startdate = pd.to_datetime(f"{year}-01-01")
         timedelta = pd.to_datetime(f"{year}-12-31") - startdate
+    elif time_selection == "all_time":
+        startdate = pd.to_datetime("2022-01-01")
+        timedelta = pd.to_datetime("2024-12-31") - startdate
     periods = timedelta.total_seconds() / pd.Timedelta(timeintervals_freq).total_seconds()
     timeintervals_periods = int(periods)
     
@@ -85,8 +108,16 @@ timeintervals = pd.interval_range(start=startdate,
                                   closed=timeintervals_closed)
 
 search_horizont = {
-    "all_per_year": all_per_year,
-    "one_day": one_day,
+    "level_0": {
+        "all_per_year": all_per_year,
+        "one_day": one_day,
+        "all_time": all_time,
+    },
+    "level_1": {
+        "all_per_year": all_year_gather,
+        "one_day": one_day_gather,
+        "all_time": all_time_gather,
+    }
 }
 # what variables should be kept
 keepvars = ['S?', 'S??']

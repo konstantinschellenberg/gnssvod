@@ -30,8 +30,8 @@ if __name__ == "__main__":
 
     # Gather stations
     suffix = ".*nc"
-    pattern_ground = str(DATA / GROUND / f"{search_horizont[time_selection]}{suffix}")
-    pattern_tower = str(DATA / TOWER / f"{search_horizont[time_selection]}{suffix}")
+    pattern_ground = str(DATA / GROUND / f"{search_horizont["level_0"][time_selection]}{suffix}")
+    pattern_tower = str(DATA / TOWER / f"{search_horizont["level_0"][time_selection]}{suffix}")
     
     pattern = {ground_station: pattern_ground,
                tower_station: pattern_tower}
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     
     # -----------------------------------
     # print all files matching the pattern using glob
-    printit = False
+    printit = True
     if printit:
         search_and_print_files(pattern_ground)
         search_and_print_files(pattern_tower)
@@ -65,6 +65,16 @@ if __name__ == "__main__":
     
     # -----------------------------------
     # run function
+    
+    """
+    Output specs:
+    - 15 secs (original time step)
+    - Only S* bands, no nav info
+    - Azimuth and elevation
+    - All SVs
+    
+    Structure: Dict{Site: DF(Station, Epoch, SV)}
+    """
     out = gv.gather_stations(mergebands=True, **args)
 
     # -----------------------------------
@@ -79,6 +89,13 @@ if __name__ == "__main__":
         plt.ylabel('Frequency')
         plt.tight_layout()
         plt.show()
+        
+        # print time native time interval
+        print("Time intervals:")
+        moz_itv = moz.index.get_level_values('Epoch').unique()
+        # get delta time
+        delta_time = (moz_itv[1] - moz_itv[0])
+        print(f"Time step: {delta_time}")
         
     print("+" * 50)
     print("Finished gathering stations.")

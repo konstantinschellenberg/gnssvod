@@ -13,11 +13,17 @@ import xarray as xr
 import warnings
 from gnssvod.io.preprocess import get_filelist
 import pdb
+from tqdm import tqdm
+
+from processing.filepattern_finder import filter_files_by_date
+
+
 #--------------------------------------------------------------------------
-#----------------- CALCULATING VOD -------------------
+#--------------------------------------------------------------------------
+#----------------- CALCULATING VOD --------------------
 #-------------------------------------------------------------------------- 
 
-def calc_vod(filepattern,pairings,bands):
+def calc_vod(filepattern,pairings,bands,interval=None):
     """
     Combines a list of NetCDF files containing gathered GNSS receiver data, calculates VOD and returns that data.
     
@@ -44,14 +50,35 @@ def calc_vod(filepattern,pairings,bands):
     Dictionary of case names associated with dataframes containing the output for each case
     
     """
-    files = get_filelist({'':filepattern})
+    if interval:
+        # filter files by date if interval is provided
+        files_ = get_filelist({'': filepattern})
+        # filter files by date
+        files = {'': filter_files_by_date(files_[""], interval)}
+    else:
+        # if no interval is provided, use all files
+        files = get_filelist({'': filepattern})
+    
     # read in all data
+    print("Number of files found: ", len(files['']))
+    print("Average filesize: ", np.mean([os.path.getsize(x)/1e6 for x in files['']]).round(2), "MB")
+    print("Total size: ", np.sum([os.path.getsize(x)/1e6 for x in files['']]).round(2), "MB")
+    
+    # benchmark reading
+    # start = time.time()
+    # xr.open_mfdataset(files[''][1]).to_dataframe().dropna(how='all')
+    # end = time.time()
+    # print("Time to read all files (xr native): ", (end-start)/60, "minutes")
+    
+    start = time.time()
     data = [xr.open_mfdataset(x).to_dataframe().dropna(how='all') for x in files['']]
+    end = time.time()
+    print("Time to read all files (Vincent's method): ", (end-start)/60, "minutes")
     # concatenate
     data = pd.concat(data)
     # calculate VOD based on pairings
     out = dict()
-    for icase in pairings.items():
+    for icase in tqdm(pairings.items(), desc="Calculating VOD", leave=True):
         iref = data.xs(icase[1][0],level='Station')
         igrn = data.xs(icase[1][1],level='Station')
         idat = iref.merge(igrn,on=['Epoch','SV'],suffixes=['_ref','_grn'])

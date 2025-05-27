@@ -22,7 +22,7 @@ from gnssvod.io.exporters import export_as_nc
 from gnssvod.position.interpolation import sp3_interp_fast
 from gnssvod.position.position import gnssDataframe
 from gnssvod.funcs.constants import _system_name
-from processing.settings import date_to_skip
+
 #-------------------------------------------------------------------------
 #----------------- FILE SELECTION AND BATCH PROCESSING -------------------
 #-------------------------------------------------------------------------
@@ -58,7 +58,8 @@ def preprocess(filepattern: dict,
                encoding: Union[None, Literal['default'], dict] = 'default',
                outputresult: bool = False,
                aux_path: Union[str, None] = None,
-               approx_position: list[float] = None) -> dict[Any, list[Observation]]:
+               approx_position: list[float] = None,
+               dates_to_skip: list[tuple] = None) -> dict[Any, list[Observation]]:
     """
     Reads and processes structured lists of RINEX observation files.
 
@@ -158,7 +159,7 @@ def preprocess(filepattern: dict,
                 continue  # skip remainder of loop and go directly to next filename
             
             # check if the file is in the list of files to skip
-            if (int(year), int(doy)) in date_to_skip:
+            if (int(year), int(doy)) in dates_to_skip:
                 print(f"{out_name} is in the list of files to skip, skipping..")
                 continue
             
