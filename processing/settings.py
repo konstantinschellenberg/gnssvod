@@ -14,10 +14,10 @@ tower_station = f"{station}1_Twr"
 
 overwrite = False  # overwrite existing files
 output_results_locally = False  # save results locally
-time_selection = "one_day"  # or "one_day" or "all_per_year" or "all_time"
+time_selection = "all_per_year"  # or "one_day" or "all_per_year" or "all_time"
 
 # example year
-year = 2024
+year = 2025
 # example file
 doy = 160
 
@@ -29,7 +29,7 @@ dates_to_skip = [(2024, 344), (2024, 174), (2024, 173), (2021, 365)]
 
 # script
 unzipping_run = False
-binex2rinex_run = True
+binex2rinex_run = False
 one_dataset_run = False
 both_datasets_run = True
 
@@ -54,21 +54,40 @@ bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','
 angular_resolution = 1  # degrees
 temporal_resolution = 30  # minutes
 agg_func = "mean"  # or "median"
-time_interval = ("2022-01-01", "2024-12-31")
+time_interval = ("2025-01-01", "2025-12-31")
 tz = "etc/GMT+6"
 angular_cutoff = 30 # degrees
 
-anomaly_type = "phi_theta_sv"  # or "phi_theta_sv" or "phi_theta"
+# ALWAYS CALC BOTH
+# anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
 plot = True  # set to True to plot results
 
 # -----------------------------------
-# SETTINGS (user) – 04_inspect_vod.py
+# SETTINGS (user) – 04_merge_years.py
+
+time_intervals = {
+    '2022': ('2022-04-03', '2022-12-30'),
+    '2023': ('2023-01-01', '2023-12-30'),
+    '2024': ('2024-01-01', '2024-12-30'),
+    '2025': ('2025-01-01', '2025-05-19'),
+}
+
+# -----------------------------------
+# SETTINGS (user) – 05_inspect_exported_vodfiles.py
 
 """
 Use this time interface for time series selection
 """
 
-time_subset = [("2024-05-01", "2024-05-30")]  # time interval for inspection
+time_subset = ("2022-01-01", "2025-05-01")  # ("2024-01-01", "2024-12-30")
+load_mode = 'multi_year'  # 'multi_year' or single_file
+
+# single file
+single_file_settings = {
+    'station': 'MOz',
+    'time_interval': ('2022-04-03', '2022-12-30'),
+    'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
+}
 
 # -----------------------------------
 # settings (static)

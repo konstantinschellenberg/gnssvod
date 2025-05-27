@@ -23,7 +23,7 @@ from processing.filepattern_finder import filter_files_by_date
 #----------------- CALCULATING VOD --------------------
 #-------------------------------------------------------------------------- 
 
-def calc_vod(filepattern,pairings,bands,interval=None):
+def calc_vod(filepattern,pairings,bands,interval=None,recover_snr=False):
     """
     Combines a list of NetCDF files containing gathered GNSS receiver data, calculates VOD and returns that data.
     
@@ -63,13 +63,7 @@ def calc_vod(filepattern,pairings,bands,interval=None):
     print("Number of files found: ", len(files['']))
     print("Average filesize: ", np.mean([os.path.getsize(x)/1e6 for x in files['']]).round(2), "MB")
     print("Total size: ", np.sum([os.path.getsize(x)/1e6 for x in files['']]).round(2), "MB")
-    
-    # benchmark reading
-    # start = time.time()
-    # xr.open_mfdataset(files[''][1]).to_dataframe().dropna(how='all')
-    # end = time.time()
-    # print("Time to read all files (xr native): ", (end-start)/60, "minutes")
-    
+
     start = time.time()
     data = [xr.open_mfdataset(x).to_dataframe().dropna(how='all') for x in files['']]
     end = time.time()
@@ -90,12 +84,21 @@ def calc_vod(filepattern,pairings,bands,interval=None):
                 ielename = f"Elevation_grn"
                 idat[ivar] = -np.log(np.power(10,(idat[igrnname]-idat[irefname])/10)) \
                             *np.cos(np.deg2rad(90-idat[ielename]))
-            
+
             idat[ivod[0]] = np.nan
             for ivar in ivars:
+                # merges differen S?? cols to one VOD column
                 idat[ivod[0]] = idat[ivod[0]].fillna(idat[ivar])
 
-        idat = idat[list(bands.keys())+['Azimuth_ref','Elevation_ref']].rename(columns={'Azimuth_ref':'Azimuth','Elevation_ref':'Elevation'})
+        print(idat.columns)
+        if recover_snr:
+            # recover SNR columns
+            snr_cols = [f"S{band[3:]}_ref" for band in bands.keys()] + \
+                          [f"S{band[3:]}_grn" for band in bands.keys()]
+            selected_cols = list(bands.keys())+snr_cols+['Azimuth_ref','Elevation_ref']
+        else:
+            selected_cols = list(bands.keys())+['Azimuth_ref','Elevation_ref']
+        idat = idat[selected_cols].rename(columns={'Azimuth_ref':'Azimuth','Elevation_ref':'Elevation'})
         # store result in dictionary
         out[icase[0]]=idat
     return out

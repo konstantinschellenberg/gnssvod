@@ -17,9 +17,10 @@ class VODReader:
     metadata from JSON files. It provides methods to access the data and metadata.
     """
     
-    def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None):
+    def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None,
+                 gatheryears: Dict[str, tuple] = None):
         """
-        Initialize the VOD reader with optional file path or settings dictionary.
+        Initialize the VOD reader with optional file path, settings dictionary, or list of years.
 
         Parameters
         ----------
@@ -27,21 +28,63 @@ class VODReader:
             Either:
             - Path to the NetCDF file to load
             - Dictionary of settings to search for matching files
+        gatheryears : list of str, optional
+            List of years to gather and concatenate datasets for.
         """
         self.file_path = None
         self.metadata_path = None
         self.data = None
         self.metadata = None
+        self.loaded = False
         
         # Load default settings from settings.py
         self._load_default_settings()
         
-        # Load based on input type
-        if file_path_or_settings is not None:
+        # Handle gatheryears if provided
+        if gatheryears:
+            self._load_from_years(gatheryears)
+        elif file_path_or_settings is not None:
             if isinstance(file_path_or_settings, dict):
                 self.load_from_settings(file_path_or_settings)
             else:
                 self.load_file(file_path_or_settings)
+    
+    def _load_from_years(self, gatheryears: Dict[str, tuple]):
+        """
+        Load and concatenate datasets for the specified years.
+
+        Parameters
+        ----------
+        gatheryears : list of str
+            List of years to gather datasets for.
+        """
+        
+        combined_data = []
+        for year in gatheryears:
+            if year not in time_intervals:
+                print(f"Warning: No time interval defined for year {year}. Skipping.")
+                continue
+            
+            settings = {
+                'station': self.default_settings.get('station', 'MOz'),
+                'time_interval': time_intervals[year],
+                'anomaly_type': self.default_settings.get('anomaly_type', 'unknown'),
+            }
+            
+            # Load data for the year
+            reader = VODReader(settings)
+            year_data = reader.get_data(format='long')
+            if year_data is not None:
+                combined_data.append(year_data)
+        
+        if combined_data:
+            self.data = pd.concat(combined_data, ignore_index=False)
+            print(f"Successfully loaded and concatenated data for years: {', '.join(gatheryears)}")
+            self._prep_data()
+            self.loaded = True
+        else:
+            print("No data found for the specified years.")
+            self.data = None
     
     def load_from_settings(self, settings: Dict):
         """
@@ -294,6 +337,14 @@ class VODReader:
             
     def _prep_data(self):
         
+        """
+        SPACE FOR ALL THE MISCELLANEOUS VARIABLE CREATED FROM VOD DATA ALONE
+        
+        
+        
+        
+        """
+        
         df = self.data.copy()
         
         # Check if 'Epoch' is in the index names
@@ -318,7 +369,7 @@ class VODReader:
         df['year'] = df.index.get_level_values('datetime').year
         
         # select only falling into any number of temporal intervals in "time_intervals" list-of-tuples
-        self.data = filter_by_time_intervals(df, time_subset, tz)
+        self.data = df
     
     def load_file(self, file_path: Union[str, Path]):
         """
@@ -378,7 +429,7 @@ class VODReader:
                 print(f"{key}: {value}")
         print("-" * 50)
     
-    def get_data(self) -> pd.DataFrame:
+    def get_data(self, format="long") -> pd.DataFrame:
         """
         Get the VOD data as a pandas DataFrame.
 
@@ -387,7 +438,41 @@ class VODReader:
         pd.DataFrame
             The VOD time series data
         """
-        return self.data
+        if format not in ["long", "wide"]:
+            raise ValueError("format must be 'long' or 'wide'")
+        
+        if format == "long":
+            return self.data
+        elif format == "wide":
+            
+            # Identify common indices to preserve
+            common_indices = ['datetime', 'hod', 'doy', 'year']
+            
+            # Ensure common indices exist as columns
+            vod_reset =  self.data.reset_index() if any(idx not in  self.data.columns for idx in common_indices) else  self.data.copy()
+            
+            # Only keep common indices that actually exist
+            existing_indices = [idx for idx in common_indices if idx in vod_reset.columns]
+            
+            # Identify value columns (all except indices and 'algo')
+            value_columns = [col for col in vod_reset.columns if col not in existing_indices + ['algo']]
+            
+            # Reshape DataFrame to have algorithm as part of column names
+            vod_wide = vod_reset.pivot_table(
+                index=existing_indices,
+                columns='algo',
+                values=value_columns
+            )
+            
+            # Flatten the MultiIndex columns to get "column_algo" format
+            vod_wide.columns = [f"{col[0]}_{col[1]}" for col in vod_wide.columns]
+            
+            # Reset index to get a regular DataFrame
+            vod_wide = vod_wide.reset_index()
+            # set datetime as index
+            return vod_wide.set_index('datetime')
+        else:
+            raise ValueError("Invalid format specified. Use 'long' or 'wide'.")
     
     def get_metadata(self) -> Dict:
         """
@@ -484,7 +569,10 @@ class VODReader:
         if self.file_path:
             return f"VODReader(file='{self.file_path.name}')"
         else:
-            return "VODReader(not loaded)"
+            if self.loaded:
+                return "VODReader(loaded with gatheryears)"
+            else:
+                return "VODReader() - No file loaded yet"
         
 if __name__ == "__main__":
     # Example usage

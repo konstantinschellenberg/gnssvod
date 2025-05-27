@@ -55,7 +55,7 @@ def create_metadata():
         'angular_resolution': angular_resolution,
         'temporal_resolution': temporal_resolution,
         'agg_func': agg_func,
-        'anomaly_type': anomaly_type,
+        # 'anomaly_type': anomaly_type,
         'angular_cutoff': angular_cutoff,
     }
     
@@ -260,5 +260,5 @@ def plot_anomaly(vod_ts, bands, **kwargs):
     ax.set_ylabel('GNSS-VOD (L1)')
     ax.legend()
     plt.title(title)
-    plt.savefig(FIG / f"vod_anomaly_{band}_{station}_{anomaly_type}.png", dpi=300)
+    plt.savefig(FIG / f"vod_anomaly_{band}_{station}.png", dpi=300)
     plt.show()

@@ -33,7 +33,7 @@ pattern = str(DATA / "gather" / f"{create_time_filter_patterns(time_interval)['n
 pairings = {station:(tower_station, ground_station)}
 # define if some observables with similar frequencies should be combined together. In the future, this should be replaced by the selection of frequency bands.
 
-vod = gv.calc_vod(pattern, pairings, bands, time_interval)[station]
+vod = gv.calc_vod(pattern, pairings, bands, time_interval, recover_snr=True)[station]
 
 # print the percentage of NaN values per column
 print("NaN values in VOD:")
@@ -42,7 +42,6 @@ print(vod.isna().mean() * 100)
 # -----------------------------------
 # hemi grid
 
-# todo: detach this into anomaly_type == "phi_theta"
 # intialize hemispheric grid
 hemi = gv.hemibuild(angular_resolution, angular_cutoff)
 # get patches for plotting later
@@ -62,78 +61,100 @@ if plot:
 # -----------------------------------
 # calculate anomaly
 
-print("Anomaly calulation type", anomaly_type)
+# print("Anomaly calulation type", anomaly_type)
+# -----------------------------------
 
-if anomaly_type == "phi_theta":
-    vod_anom = vod.join(vod_avg, on='CellID')
+print(f"Calculating VOD anomalies for {station} {year}-{doy} using both Vincent's and Konstantin's methods")
+vod_anom = vod.join(vod_avg, on='CellID')
+for band in band_ids:
+    vod_anom[f"{band}_anom"] = vod_anom[band] - vod_anom[f"{band}_mean"]
+vod_ts_1 = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_func)
+for band in band_ids:
+    vod_ts_1[f"{band}_anom"] = vod_ts_1[f"{band}_anom"] + vod_ts_1[f"{band}"].mean()
+if plot:
+    plot_anomaly(vod_ts_1, band_ids, figsize=(6, 4), title=f"VOD Anomalies per sat {station} {year}-{doy}\n Vincent's method")
+
+# -----------------------------------
+"""
+1. Calculate anomaly for each SV separately
+2. Temporally aggregate the anomalies for all SVs
+
+"""
+# Initialize an empty DataFrame to store the final results
+vod_ts_all = []
+
+# Process each satellite vehicle separately
+for sv in vod.index.get_level_values('SV').unique():
+    """ Loop through each SV in the VOD data"""
+    # Extract data for this SV only
+    vod_sv = vod.xs(sv, level='SV')
+    
+    # Skip if there's not enough data for this SV
+    if len(vod_sv) < 100:  # Adjust threshold as needed
+        print(f"Skipping SV {sv} - insufficient data points ({len(vod_sv)})")
+        continue
+    
+    # Calculate average values per grid cell for this specific SV
+    vod_avg_sv = vod_sv.groupby(['CellID']).agg(['mean', 'std', 'count'])
+    # Flatten the columns
+    vod_avg_sv.columns = ["_".join(x) for x in vod_avg_sv.columns.to_flat_index()]
+
+    # Join the cell averages back to the original data
+    vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID')
+    
+    # Calculate anomalies for each band by subtracting the mean
     for band in band_ids:
-        vod_anom[f"{band}_anom"] = vod_anom[band] - vod_anom[f"{band}_mean"]
-    vod_ts = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_func)
+        vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"]
+
+    # # Add SV as a column before appending to the combined results
+    vod_anom_sv['SV'] = sv
+    vod_anom_sv = vod_anom_sv.reset_index()
+    vod_ts_all.append(vod_anom_sv)
+
+# Combine all SV results
+if vod_ts_all:
+    """2. Temporally aggregate the anomalies for all SVs"""
+    vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
+    
+    # disregards SV as expected
+    vod_ts_2 = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_func)
+    
+    # Add back the mean to make anomalies comparable
     for band in band_ids:
-        vod_ts[f"{band}_anom"] = vod_ts[f"{band}_anom"] + vod_ts[f"{band}"].mean()
+        vod_ts_2[f"{band}_anom"] = vod_ts_2[f"{band}_anom"] + vod_ts_2[f"{band}"].mean()
+    
+    # Plot the combined anomalies
     if plot:
-        plot_anomaly(vod_ts, band_ids, figsize=(6, 4), title=f"VOD Anomalies per sat {station} {year}-{doy}\n Vincent's method")
-elif anomaly_type == "phi_theta_sv":
-    """
-    1. Calculate anomaly for each SV separately
-    2. Temporally aggregate the anomalies for all SVs
-    
-    """
-    # Initialize an empty DataFrame to store the final results
-    vod_ts_all = []
-    
-    # Process each satellite vehicle separately
-    for sv in vod.index.get_level_values('SV').unique():
-        """ Loop through each SV in the VOD data"""
-        # Extract data for this SV only
-        vod_sv = vod.xs(sv, level='SV')
-        
-        # Skip if there's not enough data for this SV
-        if len(vod_sv) < 100:  # Adjust threshold as needed
-            print(f"Skipping SV {sv} - insufficient data points ({len(vod_sv)})")
-            continue
-        
-        # Calculate average values per grid cell for this specific SV
-        vod_avg_sv = vod_sv.groupby(['CellID']).agg(['mean', 'std', 'count'])
-        # Flatten the columns
-        vod_avg_sv.columns = ["_".join(x) for x in vod_avg_sv.columns.to_flat_index()]
-
-        # Join the cell averages back to the original data
-        vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID')
-        
-        # Calculate anomalies for each band by subtracting the mean
-        for band in band_ids:
-            vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"]
-
-        # # Add SV as a column before appending to the combined results
-        vod_anom_sv['SV'] = sv
-        vod_anom_sv = vod_anom_sv.reset_index()
-        vod_ts_all.append(vod_anom_sv)
-
-    # Combine all SV results
-    if vod_ts_all:
-        """2. Temporally aggregate the anomalies for all SVs"""
-        vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
-        
-        # disregards SV as expected
-        vod_ts = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_func)
-        
-        # Add back the mean to make anomalies comparable
-        for band in band_ids:
-            vod_ts[f"{band}_anom"] = vod_ts[f"{band}_anom"] + vod_ts[f"{band}"].mean()
-        
-        # Plot the combined anomalies
-        if plot:
-            plot_anomaly(vod_ts, band_ids, figsize=(6, 4), title=f"VOD Anomalies per sat {station} {year}-{doy}\n Konstantin's extension")
-    else:
-        print("No valid data for any SV")
-        vod_ts = pd.DataFrame()  # Empty DataFrame as fallback
+        plot_anomaly(vod_ts_2, band_ids, figsize=(6, 4), title=f"VOD Anomalies per sat {station} {year}-{doy}\n Konstantin's extension")
 else:
-    raise ValueError(f"Unknown anomaly type: {anomaly_type}")
+    print("No valid data for any SV")
+    vod_ts_2 = pd.DataFrame()  # Empty DataFrame as fallback
 
+# -----------------------------------
+# Prepare final VOD time series DataFrame
+
+# merge both anomaly types into one DataFrame
+# Add algorithm identifier to each dataframe
+if not vod_ts_1.empty:
+    vod_ts_1['algo'] = 'tp'  # Vincent's method
+if not vod_ts_2.empty:
+    vod_ts_2['algo'] = 'tps'  # Konstantin's extension
+
+# Concatenate rows instead of joining columns
+vod_ts = pd.concat([vod_ts_1, vod_ts_2], axis=0)
+print("Final VOD time series shape:", vod_ts.shape)
+# cols
+print("Columns in the final VOD time series:")
+print(vod_ts.columns.tolist())
 # -----------------------------------
 
 print(vod_ts.describe())
+
+# -----------------------------------
+# drop cols
+
+# drop CellID
+vod_ts = vod_ts.drop(columns=['CellID'], errors='ignore')
 
 # -----------------------------------
 # Save VOD time series to NetCDF file
