@@ -47,7 +47,7 @@ if time_subset:
 
 figsize = (7, 5)
 
-plot = True
+plot = False
 if plot:
     plot_vod_timeseries(vod_ts, ['VOD1_anom'], figsize=figsize)
     # plot_vod_timeseries(vod_ts, ['VOD2', 'VOD2_anom'], title="VOD Time Series")
@@ -64,7 +64,7 @@ if plot:
 
 # -----------------------------------
 # diurnal plot
-plot = True
+plot = False
 if plot:
     # Create the 2x2 diurnal plot
     # For the algorithm-suffixed dataset:
@@ -83,17 +83,19 @@ if plot:
 
 # -----------------------------------
 # fingerprint plot
-plot = True
+plot = False
 if plot:
     plot_vod_fingerprint(vod_ts, 'VOD1', title="Comparing algorithms (1/3)\n No anomaly calculation\n\n band: (L1)")
     plot_vod_fingerprint(vod_algo, 'VOD1_anom_tp', title="Comparing algorithms (2/3)\n Anomaly calculated with Vincent's method\n (theta, psi)\n band: (L1)")
     plot_vod_fingerprint(vod_algo, 'VOD1_anom_tps', title="Comparing algorithms (3/3)\n Anomaly calculated with Konstantin's extension\n (theta, psi, sat)\n band: (L1)")
-
+    
+    # nsat
+    plot_vod_fingerprint(vod_ts, 'S2_ref')
 
 # -----------------------------------
 # polarimetry
 # Basic scatter plot colored by hour of day
-plot = True
+plot = False
 if plot:
     
     # With linear fit and custom settings
@@ -110,7 +112,7 @@ if plot:
     
 # -----------------------------------
 # diurnal power
-plot = True
+plot = False
 if plot:
     plot_daily_diurnal_range(vod_ts, vars_to_plot=['VOD1_anom', 'VOD2_anom'],
                              title="Daily Diurnal Range of VOD1 and VOD2",
@@ -118,3 +120,11 @@ if plot:
     
     # plot_daily_diurnal_range(vod_algo, vars_to_plot=['VOD1_anom_tp', 'VOD1_anom_tps'],
     #                          title="Daily Diurnal Range of VOD1 and VOD2")
+
+
+# -----------------------------------
+# wavelet
+
+wvlt = True
+if wvlt:
+    analyze_wavelets(vod_ts, 'VOD1_anom')

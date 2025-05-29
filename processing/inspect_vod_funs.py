@@ -5,6 +5,7 @@ import pandas as pd
 
 from definitions import FIG
 from processing.settings import time_interval, tz
+import matplotlib.pyplot as plt
 
 
 def filter_by_time_intervals(df, time_intervals, time_intervals_tz, datetime_col=None):
@@ -639,4 +640,272 @@ def plot_daily_diurnal_range(df, vars_to_plot=['VOD1', 'VOD2'], figsize=(8, 5), 
     if filename:
         plt.savefig(filename, dpi=300, bbox_inches='tight')
 
+    plt.show()
+
+
+def prepare_wavelet_analysis(df, variable, datetime_col='datetime'):
+    """
+    Prepare time series data for wavelet analysis by resampling to regular intervals
+    and preprocessing the signal.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame containing the time series data
+    variable : str
+        Name of the variable to analyze
+    datetime_col : str, optional
+        Name of the datetime column
+
+    Returns:
+    --------
+    tuple: (time, signal, scales)
+        Arrays needed for wavelet analysis
+    """
+    import numpy as np
+    import pandas as pd
+    import scipy.signal as sig
+    
+    # just keep var
+    if variable not in df.columns:
+        raise ValueError(f"Variable '{variable}' not found in DataFrame")
+    
+    # reset index if datetime_col is not index
+    if datetime_col not in df.columns:
+        # reset index to make datetime_col a column
+        df = df.reset_index()
+    
+    # Ensure datetime is properly formatted
+    if not pd.api.types.is_datetime64_any_dtype(df[datetime_col]):
+        df[datetime_col] = pd.to_datetime(df[datetime_col])
+        
+    df = df.copy()
+    # keep only datetime and var
+    df = df[[datetime_col, variable]].dropna(subset=[datetime_col, variable])
+    
+    # Sort by datetime and create regular time series
+    df_sorted = df.sort_values(by=datetime_col).copy()
+    df_indexed = df_sorted.set_index(datetime_col)
+    
+    # Determine appropriate resampling frequency
+    time_deltas = np.diff(df_indexed.index.astype(np.int64))
+    median_minutes = np.median(time_deltas) / (1000000000 * 60)
+    
+    # Select resampling frequency based on data granularity
+    if median_minutes < 15:
+        freq = '5min'
+    elif median_minutes < 60:
+        freq = '15min'
+    elif median_minutes < 24 * 60:
+        freq = 'H'
+    else:
+        freq = 'D'
+    
+    # Resample and interpolate missing values
+    df_resampled = df_indexed.resample(freq).mean().interpolate(method='linear')
+    
+    # Extract and preprocess signal
+    signal_raw = df_resampled[variable].values
+    detrended = sig.detrend(signal_raw)
+    normalized = (detrended - np.mean(detrended)) / np.std(detrended)
+    
+    # Calculate time in decimal years for better visualization
+    time_raw = df_resampled.index.to_numpy().astype('datetime64[s]')
+    years = time_raw.astype('datetime64[Y]').astype(int) + 1970
+    days_in_year = np.array([366 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 365 for y in years])
+    day_of_year = (time_raw - time_raw.astype('datetime64[Y]')).astype('timedelta64[D]').astype(int) + 1
+    time_of_day = (time_raw - time_raw.astype('datetime64[D]')).astype('timedelta64[s]').astype(int) / 86400
+    time_decimal = years + (day_of_year + time_of_day) / days_in_year
+    
+    # Create scales for wavelet transform
+    dt = (time_decimal[1] - time_decimal[0])
+    min_period = 2 * dt  # Nyquist frequency
+    max_period = 0.5 * (time_decimal[-1] - time_decimal[0])
+    
+    min_scale = min_period / dt
+    max_scale = max_period / dt
+    
+    # Create logarithmic scale points
+    num_scales = 50
+    scales = np.logspace(np.log10(min_scale), np.log10(max_scale), num_scales)
+    
+    return time_decimal, normalized, scales
+
+
+def analyze_wavelets(df, var, save_dir=None, **kwargs):
+    """
+    Perform wavelet analysis on tau_r and tau_g time series and their ratio.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame containing tau_r, tau_g, and datetime columns
+    save_dir : Path or str, optional
+        Directory to save the plots, defaults to FIGDIR
+    """
+
+    from pathlib import Path
+    
+    if save_dir is None:
+        save_dir = FIG
+    else:
+        save_dir = Path(save_dir)
+        
+    smoothing = kwargs.get('smoothing', True)
+    window_length = kwargs.get('window_length', 15)
+    polyorder = kwargs.get('polyorder', 3)
+
+    # Process each variable and store their wavelet data
+    print(f"Processing {var} for wavelet analysis...")
+    
+    # check if var in df
+    if var not in df.columns:
+        raise ValueError(f"Variable '{var}' not found in DataFrame")
+    
+    # -----------------------------------
+    # 1) smoothing
+    
+    if smoothing:
+        from scipy.signal import savgol_filter
+        # Apply Savitzky-Golay filter for smoothing
+        print(f"Smoothing {var} with Savitzky-Golay filter (window_length={window_length}, polyorder={polyorder})...")
+        df[var] = savgol_filter(df[var], window_length=window_length, polyorder=polyorder, mode='nearest')
+    else:
+        print(f"Skipping smoothing for {var}. Using raw data for wavelet analysis.")
+    
+    # -----------------------------------
+    # 2) prepare time series for wavelet analysis
+    
+    time, signal, scales = prepare_wavelet_analysis(df, var)
+
+    # Define output filename
+    figname = save_dir / f"wavelet_{var}.png"
+    
+    # -----------------------------------
+    # 3) plot wavelet analysis
+    
+    print(f"Creating wavelet plot for {var}...")
+    # Create wavelet plot
+    plot_wavelet(
+        time=time,
+        signal=signal,
+        scales=scales,
+        title=f"Wavelet Transform (Power Spectrum) of {var}",
+        ylabel='Period (days)',
+        figname=figname
+    )
+    print(f"Wavelet analysis for {var} saved to {figname}")
+
+
+def plot_wavelet(time, signal, scales, waveletname='cmor1.5-1.0', cmap=plt.cm.seismic,
+                 title='Wavelet Transform (Power Spectrum) of signal',
+                 ylabel='Period (hours)', xlabel='Time', figname=None, plt=None):
+    import matplotlib.dates as mdates
+    import datetime
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import pywt
+    
+    # Convert decimal years to datetime objects
+    datetimes = []
+    for t in time:
+        year = int(t)
+        fraction = t - year
+        # Calculate days in the year
+        days_in_year = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
+        # Calculate day of year from fraction
+        day_of_year = int(fraction * days_in_year)
+        
+        # Create datetime for the beginning of that day
+        dt = datetime.datetime(year, 1, 1) + datetime.timedelta(days=day_of_year)
+        
+        # Add time of day (fractional part of the day)
+        day_fraction = fraction * days_in_year - day_of_year
+        hours = int(day_fraction * 24)
+        minutes = int((day_fraction * 24 - hours) * 60)
+        seconds = int(((day_fraction * 24 - hours) * 60 - minutes) * 60)
+        dt = dt.replace(hour=hours, minute=minutes, second=seconds)
+        
+        datetimes.append(dt)
+    
+    dt = time[1] - time[0]
+    [coefficients, frequencies] = pywt.cwt(signal, scales, waveletname, dt)
+    power = (abs(coefficients)) ** 2
+    period = (1. / frequencies) * 365.5  # Convert to days
+    
+    # Set up levels for contour plot
+    scale0 = 1 / 100
+    numlevels = 20
+    levels = [scale0]
+    for ll in range(1, numlevels):
+        scale0 *= 2
+        levels.append(scale0)
+    contourlevels = np.log2(levels)
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Plot contours with datetime x-axis
+    im = ax.contourf(mdates.date2num(datetimes), np.log2(period), np.log2(power),
+                     contourlevels, extend='both', cmap=cmap)
+    
+    # Format x-axis to show months
+    ax.xaxis_date()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    
+    # Get years in data
+    years = sorted(list(set([d.year for d in datetimes])))
+    
+    # If data spans multiple years, add year labels at bottom
+    if len(years) > 1:
+        # Create a second x-axis for year labels
+        ax2 = ax.twiny()
+        ax2.set_xlim(ax.get_xlim())
+        
+        # Set year ticks at the middle of each year
+        year_ticks = []
+        year_labels = []
+        
+        for year in years:
+            # Find all dates in this year
+            year_dates = [d for d in datetimes if d.year == year]
+            if year_dates:
+                # Use middle of the available data for this year
+                mid_idx = len(year_dates) // 2
+                year_ticks.append(year_dates[mid_idx])
+                year_labels.append(str(year))
+        
+        # Set up the year axis
+        ax2.set_xticks(mdates.date2num(year_ticks))
+        ax2.set_xticklabels(year_labels)
+        ax2.xaxis.set_ticks_position('bottom')
+        ax2.xaxis.set_label_position('bottom')
+        ax2.spines['bottom'].set_visible(False)
+        ax2.tick_params(axis='x', which='both', bottom=False, top=False)
+        ax2.xaxis.set_tick_params(pad=25)  # Position year labels below month labels
+    
+    # Set up the rest of the plot
+    ax.set_title(title, fontsize=20)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_xlabel(xlabel, fontsize=18)
+    
+    # Format y-axis (log scale periods)
+    yticks = 2 ** np.arange(np.ceil(np.log2(period.min())),
+                            np.ceil(np.log2(period.max())))
+    ax.set_yticks(np.log2(yticks))
+    ax.set_yticklabels(yticks)
+    ax.invert_yaxis()
+    
+    # Add colorbar
+    cbar_ax = fig.add_axes([0.95, 0.15, 0.03, 0.7])
+    fig.colorbar(im, cax=cbar_ax, orientation="vertical")
+    
+    # Save figure
+    if not figname:
+        plt.savefig('wavelet_{}.png'.format(waveletname),
+                    dpi=300, bbox_inches='tight')
+    else:
+        plt.savefig(figname, dpi=300, bbox_inches='tight')
+    
     plt.show()
