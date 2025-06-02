@@ -1,5 +1,9 @@
 # Scrapbook for task withing `gnssvod`
 
+## 6/1/25
+
+- [ ] From 30min to 1h averaging
+
 ## Notes
 
 - RINEX data worthless, no CN0 data included

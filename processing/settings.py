@@ -51,12 +51,20 @@ timeintervals_closed = 'left'
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
 
-angular_resolution = 1  # degrees
-temporal_resolution = 30  # minutes
+visualization_timezone = "etc/GMT+6"
+angular_resolution = 0.5  # degrees
+temporal_resolution = 60  # minutes  # change from 30
 agg_func = "mean"  # or "median"
-time_interval = ("2025-01-01", "2025-12-31")
-tz = "etc/GMT+6"
-angular_cutoff = 30 # degrees
+time_interval = ("2024-04-01", "2024-05-30")
+angular_cutoff = 10 # changed from 30
+
+iterate_options = True  # set to True to iterate over parameters
+iterate_options_parameters = {
+    'angular_resolutions': [0.5, 1.0],
+    'angular_cutoffs': [10, 30],
+    'temporal_resolutions': [30, 60],
+    'max_workers': 8,  # number of workers for multiprocessing
+}
 
 # ALWAYS CALC BOTH
 # anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
@@ -79,7 +87,9 @@ time_intervals = {
 Use this time interface for time series selection
 """
 
-time_subset = ("2022-01-01", "2025-05-01")  # ("2024-01-01", "2024-12-30")
+# subset must be in tz
+time_subset = ("2024-01-01", "2024-12-31")  # ("2024-01-01", "2024-12-30")
+
 load_mode = 'multi_year'  # 'multi_year' or single_file
 
 # single file

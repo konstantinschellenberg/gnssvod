@@ -32,7 +32,7 @@ vod_algo = reader.get_data(format='wide').copy()
 if time_subset:
     # Convert time_subset to datetime if it's a string
     if isinstance(time_subset, str):
-        time_subset = pd.to_datetime(time_subset, format='%Y-%m-%d', utc=True).tz_convert(tz)
+        time_subset = pd.to_datetime(time_subset, format='%Y-%m-%d', utc=True).tz_convert(visualization_timezone)
     
     # Filter vod_ts based on the time_subset
     vod_ts = vod_ts[vod_ts.index >= time_subset[0]]
@@ -47,7 +47,7 @@ if time_subset:
 
 figsize = (7, 5)
 
-plot = False
+plot = True
 if plot:
     plot_vod_timeseries(vod_ts, ['VOD1_anom'], figsize=figsize)
     # plot_vod_timeseries(vod_ts, ['VOD2', 'VOD2_anom'], title="VOD Time Series")
@@ -64,7 +64,7 @@ if plot:
 
 # -----------------------------------
 # diurnal plot
-plot = False
+plot = True
 if plot:
     # Create the 2x2 diurnal plot
     # For the algorithm-suffixed dataset:
@@ -83,7 +83,7 @@ if plot:
 
 # -----------------------------------
 # fingerprint plot
-plot = False
+plot = True
 if plot:
     plot_vod_fingerprint(vod_ts, 'VOD1', title="Comparing algorithms (1/3)\n No anomaly calculation\n\n band: (L1)")
     plot_vod_fingerprint(vod_algo, 'VOD1_anom_tp', title="Comparing algorithms (2/3)\n Anomaly calculated with Vincent's method\n (theta, psi)\n band: (L1)")
@@ -112,7 +112,7 @@ if plot:
     
 # -----------------------------------
 # diurnal power
-plot = False
+plot = True
 if plot:
     plot_daily_diurnal_range(vod_ts, vars_to_plot=['VOD1_anom', 'VOD2_anom'],
                              title="Daily Diurnal Range of VOD1 and VOD2",
@@ -125,6 +125,6 @@ if plot:
 # -----------------------------------
 # wavelet
 
-wvlt = True
+wvlt = False
 if wvlt:
     analyze_wavelets(vod_ts, 'VOD1_anom')

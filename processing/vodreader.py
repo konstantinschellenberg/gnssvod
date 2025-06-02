@@ -5,7 +5,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import Dict, Optional, Union, List
 
-from processing.inspect_vod_funs import filter_by_time_intervals
 from processing.settings import *
 
 
@@ -18,7 +17,8 @@ class VODReader:
     """
     
     def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None,
-                 gatheryears: Dict[str, tuple] = None):
+                 gatheryears: Dict[str, tuple] = None,
+                 transform_time: bool = True):
         """
         Initialize the VOD reader with optional file path, settings dictionary, or list of years.
 
@@ -36,6 +36,7 @@ class VODReader:
         self.data = None
         self.metadata = None
         self.loaded = False
+        self.transform_time = transform_time  # Whether to transform time to a specific timezone
         
         # Load default settings from settings.py
         self._load_default_settings()
@@ -360,8 +361,13 @@ class VODReader:
             df = df.sort_index(level='datetime')
         
         # transfrom the time from utc to central us time
-        df.index = df.index.tz_convert('etc/GMT+6')
-        
+        if self.transform_time:
+            # Convert to UTC first if not already
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC')
+            # Convert to tz
+            df.index = df.index.tz_convert(visualization_timezone)
+            
         # add hour-of-day as a column (subminute)
         df['hod'] = df.index.get_level_values('datetime').hour + df.index.get_level_values('datetime').minute / 60.0
         # add day-of-year as a column
