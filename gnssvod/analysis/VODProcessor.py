@@ -491,7 +491,7 @@ class VODProcessor:
             vod_ts_combined, vod_avg = calculate_anomaly(
                 vod_with_cells=vod_with_cells,
                 band_ids=self.band_ids,
-                temporal_resolution=params['temporal_resolution']
+                temporal_resolution=params['temporal_resolution'],
             )
             
             # Add parameter columns

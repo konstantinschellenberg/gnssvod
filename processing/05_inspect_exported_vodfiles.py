@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+from definitions import *
 from processing.inspect_vod_funs import *
-from io.vodreader import VODReader
+from gnssvod.io.vodreader import VODReader
 from processing.settings import *
 
 
@@ -12,17 +13,35 @@ if load_mode == 'single_file':
     reader = VODReader(single_file_settings)
 elif load_mode == 'multi_year':
     reader = VODReader(gatheryears=time_intervals)
+elif load_mode == 'final_vod':
+    reader = VODReader(file_path_or_settings=DATA / "ard" / final_vod_path,)
 
 # -----------------------------------
 # Get long data
 vod = reader.get_data(format='long')
+
+
+# -----------------------------------
+# filter for
+
+"""
+temporal_resolution = 60
+angular_resolution = 0.5
+angular_cutoff = 10
+algo = 'tp'
+"""
+
+vod = vod[(vod['temporal_resolution'] == temporal_resolution) &
+          (vod['angular_resolution'] == angular_resolution) &
+          (vod['angular_cutoff'] == angular_cutoff)].copy()
+
 
 if vod is None:
     raise ValueError("No VOD data found for the specified time interval.")
 
 # -----------------------------------
 # selecting only the 'tps' algorithm
-vod_ts = vod[vod['algo'] == 'tps'].copy()
+vod_ts = vod[vod['algo'] == 'tp'].copy()
 # get both algos to compare them
 vod_algo = reader.get_data(format='wide').copy()
 

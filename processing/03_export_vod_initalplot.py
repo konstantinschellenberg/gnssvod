@@ -66,6 +66,7 @@ if __name__ == "__main__":
                 y_limits={'VOD1': (0.0, 1.2)},
                 time_zone=visualization_timezone,
             )
+            
         
         if iterate_parameters:
             print(f"Iterating over parameter combinations")

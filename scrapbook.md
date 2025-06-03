@@ -1,10 +1,19 @@
 # Scrapbook for task withing `gnssvod`
 
+## 6/3/25
+
+| Metric name                                         | Symbol            | Mathematical representation          | Rationale                                           |
+|-----------------------------------------------------|-------------------|:-------------------------------------|-----------------------------------------------------|
+| Number of sats in view                              | $N_s(t)$          |                                      | Gaps in the overall coverage                        |
+| Standard deviation of the number of sats in view    | $\sigma_{N_s(t)}$ |                                      | Variability of observations with in a time interval |
+| Fraction of sky currently observed (cutoff applied) | $C(t)$            | $C(t) = \frac{C_t * 100}{C_{total}}$ | Probably correlated to  $N_s(t)$                    |
+| Binned fraction of sky observed (cutoff applied)    | $C_b(t)$          | $C_i(t) = \frac{C_{t,i}*100}{C_t}$   | Variability in biomass areas observed               |
+
 ## 6/2/25
 
 - Save intermediate results under /temp with the hope that this reduces the memory weight in the anomaly processing
 - Final layout of multiparameter plots
-- - 
+- Conception of new gnss features
 
 ## 6/1/25
 

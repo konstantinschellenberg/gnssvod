@@ -51,8 +51,14 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     # -----------------------------------
     # Method 1: Vincent's method (phi_theta) - short tp
     # Get average value per grid cell
+    global vod_ts_1
     vod_avg = vod_with_cells.groupby(['CellID']).agg(['mean', 'std', 'count'])
     vod_avg.columns = ["_".join(x) for x in vod_avg.columns.to_flat_index()]
+    
+    # Count satellites per original epoch first
+    sv_counts = vod_with_cells.groupby('Epoch').apply(lambda x: x.index.get_level_values('SV').nunique())
+    
+    # -----------------------------------
     
     # Calculate anomaly
     vod_anom = vod_with_cells.join(vod_avg, on='CellID')
@@ -63,6 +69,107 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     vod_ts_1 = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
     for band in band_ids:
         vod_ts_1[f"{band}_anom"] = vod_ts_1[f"{band}_anom"] + vod_ts_1[f"{band}"].mean()
+    
+    # -----------------------------------
+    # NEW FEATURES
+    # Calculate Ns(t): Average number of satellites per resampled epoch
+    ns_t = sv_counts.groupby(pd.Grouper(freq=f"{temporal_resolution}min")).mean().rename('Ns_t')
+    
+    # ########
+    # Calculate SD(Ns(t)): Standard deviation of the number of satellites per resampled epoch
+    sd_ns_t = sv_counts.groupby(pd.Grouper(freq=f"{temporal_resolution}min")).std().rename('SD_Ns_t')
+    
+    # ########
+    # Calculate C(t): Percentage of sky plots covered per time period
+    # First, count total unique cells in the entire dataset
+    total_possible_cells = vod_with_cells['CellID'].nunique()
+    
+    # cutoff already applied to hemi grid - doesn't need to be filtere here again :)
+    # For each time window, calculate the percentage of sky covered
+    cell_coverage = vod_with_cells.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).apply(
+        lambda x: x['CellID'].nunique() / total_possible_cells * 100
+    ).rename('C_t_perc')
+    
+    # ########
+    # Calculate Ci(t): Binned percentage (by VOD percentiles) of sky plots covered per time period
+    num_bins = kwargs.get('vod_percentile_bins', 5)
+    
+    for band in band_ids:
+        # Get the mean VOD values for this band
+        band_means = vod_avg[f"{band}_mean"]
+        
+        # Create bins based on VOD percentiles
+        try:
+            # Try to create equal-sized bins by percentile
+            bins = pd.qcut(band_means, num_bins, labels=False, duplicates='drop')
+        except ValueError:
+            # Fall back to equal-width bins if not enough unique values
+            bins = pd.cut(band_means, min(num_bins, len(band_means.unique())), labels=False)
+        
+        plot = False
+        if plot:
+            # Calculate actual bin edges for visualization
+            if isinstance(bins, pd.Series):
+                # Get the unique bin values and their corresponding data
+                bin_groups = {}
+                for bin_num in range(num_bins):
+                    bin_groups[bin_num] = band_means[bins == bin_num]
+                
+                # Calculate min and max for each bin to use as edges
+                bin_edges = [bin_groups[i].min() for i in sorted(bin_groups.keys())]
+                bin_edges.append(bin_groups[max(bin_groups.keys())].max())
+                
+                from matplotlib import pyplot as plt
+                plt.figure(figsize=(10, 6))
+                band_means.hist(bins=30, alpha=0.5, label='VOD Means')
+                for edge in bin_edges:
+                    plt.axvline(edge, color='red', linestyle='--')
+                plt.axvline(bin_edges[0], color='red', linestyle='--', label='Bin Edges')  # Add label only once
+                plt.title(f"VOD Means Histogram with Bins for {band}")
+                plt.xlabel('VOD Mean Values')
+                plt.ylabel('Frequency')
+                plt.legend()
+                plt.show()
+        
+        # Create a mapping from CellID to bin
+        cell_to_bin = pd.Series(bins.values, index=band_means.index, name='bin')
+        
+        # Count total cells in each bin
+        total_cells_per_bin = cell_to_bin.value_counts().sort_index()
+        
+        # Create a temporary DataFrame with just the necessary data
+        temp_df = pd.DataFrame({
+            'Epoch': vod_with_cells.index.get_level_values('Epoch'),
+            'CellID': vod_with_cells['CellID']
+        }).drop_duplicates()
+        
+        # Add bin information based on CellID
+        temp_df = temp_df.join(cell_to_bin, on='CellID')
+        
+        # Group by time window and bin, count unique cells
+        bin_counts = temp_df.groupby([
+            pd.Grouper(key='Epoch', freq=f"{temporal_resolution}min"),
+            'bin'
+        ])['CellID'].nunique().unstack(fill_value=0)
+        
+        # Calculate percentage of each bin covered relative to total current coverage
+        bin_coverage = pd.DataFrame(index=bin_counts.index)
+        # Calculate total cells covered at each time step across all bins
+        total_current_coverage = bin_counts.sum(axis=1)
+        for bin_idx in range(num_bins):
+            if bin_idx in bin_counts.columns and bin_idx in total_cells_per_bin.index:
+                # Calculate relative coverage (percentage of current total coverage this bin represents)
+                bin_coverage[f"Ci_t_{band}_bin{bin_idx}_pct"] = (
+                        bin_counts[bin_idx] / total_current_coverage.replace(0, np.nan) * 100
+                )
+        # Join the results to vod_ts_1
+        vod_ts_1 = vod_ts_1.join(bin_coverage)
+    
+    # -----------------------------------
+    # join new features to the aggregated time series
+    vod_ts_1 = vod_ts_1.join(ns_t)
+    vod_ts_1 = vod_ts_1.join(sd_ns_t)
+    vod_ts_1 = vod_ts_1.join(cell_coverage)
     
     # -----------------------------------
     # Method 2: Konstantin's extension (phi_theta_sv) - short tps

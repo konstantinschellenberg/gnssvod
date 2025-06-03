@@ -404,6 +404,8 @@ class VODReader:
             Returns self for method chaining
         """
         # Convert to Path object
+        
+        filetype = Path(file_path).suffix
         self.file_path = Path(file_path)
         
         # Check if file exists
@@ -412,23 +414,31 @@ class VODReader:
         
         # Load data
         print(f"Loading VOD data from {self.file_path}")
-        ds = xr.open_dataset(self.file_path)
-        self.data = ds.to_dataframe()
         
+        if filetype.lower() == '.nc':
+            ds = xr.open_dataset(self.file_path)
+            self.data = ds.to_dataframe()
+        elif filetype.lower() == '.csv':
+            self.data = pd.read_csv(self.file_path, index_col=0, parse_dates=True)
+            
         # prep data
         self._prep_data()
 
         # Find and load metadata
-        self.metadata_path = Path(str(self.file_path).replace('.nc', '_metadata.json'))
-        if self.metadata_path.exists():
-            with open(self.metadata_path, 'r') as f:
-                self.metadata = json.load(f)
-                print(f"Loaded metadata from {self.metadata_path}")
+        if filetype.lower() == '.nc':
+            self.metadata_path = Path(str(self.file_path).replace('.nc', '_metadata.json'))
+            if self.metadata_path.exists():
+                with open(self.metadata_path, 'r') as f:
+                    self.metadata = json.load(f)
+                    print(f"Loaded metadata from {self.metadata_path}")
+            else:
+                print(f"Warning: No metadata file found at {self.metadata_path}")
+                self.metadata = self.default_settings
         else:
-            print(f"Warning: No metadata file found at {self.metadata_path}")
-            self.metadata = self.default_settings
-        
-        return self
+            print(f"No metadata file for CSV format. Using default settings.")
+            
+        # Set loaded flag
+        self.loaded = True
     
     def print_metadata(self):
         """Print the metadata in a readable format"""
