@@ -49,9 +49,11 @@ timeintervals_closed = 'left'
 # SETTINGS (user) – 03_export_vod.py
 
 # general settings
-batch_run = True  # run all years in batch mode
+batch_run = False  # run all years in batch mode
 iterate_parameters = False  # set to True to iterate over parameters
 plot = True  # I think this option is dead
+overwrite_vod_processing = False  # overwrite existing VOD processing files
+overwrite_anomaly_processing = True  # overwrite existing anomaly processing files
 
 # parameters
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
@@ -74,6 +76,7 @@ gnss_parameters = {
     'temporal_resolution': temporal_resolution,
     'canopy_height': canopy_height,
     'z0': z0,
+    'overwrite': overwrite_anomaly_processing,  # overwrite existing VOD processing files
 }
 
 gnss_parameters_iterative = {
@@ -81,6 +84,7 @@ gnss_parameters_iterative = {
     'angular_cutoff': [10, 30, 60],
     'temporal_resolution': [30, 60],
     'max_workers': 1,  # number of workers for multiprocessing
+    'overwrite': overwrite_anomaly_processing,  # overwrite existing anomaly processing files
 }
 
 # ALWAYS CALC BOTH
@@ -97,13 +101,8 @@ time_intervals = [
 # -----------------------------------
 # SETTINGS (user) – 04_merge_years.py
 
-# todo: use the time_intervals from 03_export_vod.py
-# time_intervals = {
-#     '2022': ('2022-04-03', '2022-12-30'),
-#     '2023': ('2023-01-01', '2023-12-30'),
-#     '2024': ('2024-01-01', '2024-12-30'),
-#     '2025': ('2025-01-01', '2025-05-19'),
-# }
+# multiparameter (iterate_parameters)?
+multiple_parameters = True  # set to True to iterate over parameters
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py

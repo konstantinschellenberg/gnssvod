@@ -10,7 +10,8 @@ import pandas as pd
 from definitions import DATA
 import gnssvod as gv
 from processing.filepattern_finder import create_time_filter_patterns
-from processing.settings import bands, station, single_file_interval
+from processing.settings import bands, station
+from gnssvod.analysis.calculate_anomalies import calculate_anomaly
 
 class VODProcessor:
     def __init__(self, station=station, bands=bands, time_interval=None,
@@ -35,6 +36,7 @@ class VODProcessor:
         overwrite : bool, default=False
             Whether to overwrite existing files
         """
+        self.vod_processing_params = None
         self.vod_filename = None
         self.station = station
         self.bands = bands
@@ -309,9 +311,6 @@ class VODProcessor:
             # Check if file exists and overwrite flag
             if file_path.exists() and not overwrite:
                 print(f"File {file_path} already exists. Pass overwrite=True to overwrite.")
-                # Still save metadata even if not overwriting the data
-                metadata = self._create_metadata()
-                save_metadata(metadata, file_path)
                 return file_path
             
             # Save to NetCDF
@@ -388,7 +387,7 @@ class VODProcessor:
                 "pairings": self.pairings,
                 "recover_snr": self.recover_snr,
                 "overwrite": self.overwrite,
-                "plot": self.plot
+                "plot": self.plot,
             }
         }
         
@@ -399,6 +398,10 @@ class VODProcessor:
         # Add anomaly parameters if they exist
         if hasattr(self, 'anomaly_params'):
             metadata["anomaly_processing"] = self.anomaly_params
+            # add a key "multi_parameter" to indicate that multiple parameter combinations were processed
+            # check if any of the parameters are lists of len > 1
+            multi_parameter = any(isinstance(v, list) and len(v) > 1 for v in self.anomaly_params.values())
+            metadata["anomaly_processing"]["multi_parameter"] = multi_parameter
         else:
             # If processing hasn't run, but we have the parameters as attributes
             anomaly_params = {}
@@ -452,91 +455,6 @@ class VODProcessor:
         
         return hemi, patches, vod_with_cells
     
-    def calculate_anomaly(self, vod_with_cells, temporal_resolution):
-        """
-        Calculate VOD anomalies using both methods.
-
-        Parameters
-        ----------
-        vod_with_cells : pandas.DataFrame
-            VOD data with cell IDs
-        temporal_resolution : int
-            Temporal resolution in minutes
-
-        Returns
-        -------
-        tuple
-            (vod_ts_1, vod_ts_2, vod_ts_combined)
-        """
-        # Method 1: Vincent's method (phi_theta)
-        # Get average value per grid cell
-        vod_avg = vod_with_cells.groupby(['CellID']).agg(['mean', 'std', 'count'])
-        vod_avg.columns = ["_".join(x) for x in vod_avg.columns.to_flat_index()]
-        
-        # Calculate anomaly
-        vod_anom = vod_with_cells.join(vod_avg, on='CellID')
-        for band in self.band_ids:
-            vod_anom[f"{band}_anom"] = vod_anom[band] - vod_anom[f"{band}_mean"]
-        
-        # Temporal aggregation
-        vod_ts_1 = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
-        for band in self.band_ids:
-            vod_ts_1[f"{band}_anom"] = vod_ts_1[f"{band}_anom"] + vod_ts_1[f"{band}"].mean()
-        
-        # Method 2: Konstantin's extension (phi_theta_sv)
-        vod_ts_all = []
-        
-        # Process each satellite vehicle separately
-        for sv in vod_with_cells.index.get_level_values('SV').unique():
-            # Extract data for this SV only
-            vod_sv = vod_with_cells.xs(sv, level='SV')
-            
-            # Skip if there's not enough data for this SV
-            if len(vod_sv) < 100:
-                continue
-            
-            # Calculate average values per grid cell for this specific SV
-            vod_avg_sv = vod_sv.groupby(['CellID']).agg(['mean', 'std', 'count'])
-            vod_avg_sv.columns = ["_".join(x) for x in vod_avg_sv.columns.to_flat_index()]
-            
-            # Join the cell averages back to the original data
-            vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID')
-            
-            # Calculate anomalies for each band
-            for band in self.band_ids:
-                vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"]
-            
-            # Add SV as a column before appending
-            vod_anom_sv['SV'] = sv
-            vod_anom_sv = vod_anom_sv.reset_index()
-            vod_ts_all.append(vod_anom_sv)
-        
-        # Combine all SV results
-        if vod_ts_all:
-            vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
-            
-            # Temporal aggregation
-            vod_ts_2 = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
-            
-            # Add back the mean
-            for band in self.band_ids:
-                vod_ts_2[f"{band}_anom"] = vod_ts_2[f"{band}_anom"] + vod_ts_2[f"{band}"].mean()
-        else:
-            vod_ts_2 = pd.DataFrame()
-        
-        # Combine both methods
-        if not vod_ts_1.empty:
-            vod_ts_1['algo'] = 'tp'  # Vincent's method
-        if not vod_ts_2.empty:
-            vod_ts_2['algo'] = 'tps'  # Konstantin's extension
-        
-        # Concatenate results
-        vod_ts_combined = pd.concat([vod_ts_1, vod_ts_2], axis=0)
-        
-        # Drop CellID if present
-        vod_ts_combined = vod_ts_combined.drop(columns=['CellID'], errors='ignore')
-        
-        return vod_ts_1, vod_ts_2, vod_ts_combined
     
     def _run_parameter_combination(self, params):
         """
@@ -568,11 +486,12 @@ class VODProcessor:
             
             # Classify VOD into grid cells
             vod_with_cells = hemi.add_CellID(vod.copy()).drop(columns=['Azimuth', 'Elevation'])
-            
+
             # Calculate anomalies
-            _, _, vod_ts_combined = self.calculate_anomaly(
-                vod_with_cells,
-                params['temporal_resolution']
+            vod_ts_combined, vod_avg = calculate_anomaly(
+                vod_with_cells=vod_with_cells,
+                band_ids=self.band_ids,
+                temporal_resolution=params['temporal_resolution']
             )
             
             # Add parameter columns
@@ -790,6 +709,9 @@ class VODProcessor:
         y_limits : dict, optional
             Dictionary mapping variable names to (min, max) tuples for y-axis limits
         """
+        
+        print(f"Plotting results for {self.station} with algo='{algo}' and gnssband='{gnssband}'")
+        
         if self.results is None:
             print("No results available. Run process_vod first.")
             return

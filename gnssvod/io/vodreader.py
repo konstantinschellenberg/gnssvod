@@ -105,7 +105,7 @@ class VODReader:
         # Extract key parameters from settings
         station = settings.get('station', self.default_settings.get('station', 'MOz'))
         time_interval = settings.get('time_interval', self.default_settings.get('time_interval'))
-        anomaly_type = settings.get('anomaly_type', self.default_settings.get('anomaly_type'))
+        multiple_parameters = settings.get('anomaly_processing')['multi_parameter']
         
         # Get the base directory for VOD time series files
         from definitions import DATA
@@ -157,7 +157,8 @@ class VODReader:
                                 file_info.update({
                                     "anomaly_type": file_metadata.get("anomaly_type", "unknown"),
                                     "angular_resolution": file_metadata.get("angular_resolution", "unknown"),
-                                    "temporal_resolution": file_metadata.get("temporal_resolution", "unknown")
+                                    "temporal_resolution": file_metadata.get("temporal_resolution", "unknown"),
+                                    "multiple_parameters": file_metadata.get('anomaly_processing', {}).get('multi_parameter', "unknown"),
                                 })
                     
                     # Check if file date range matches the requested range
@@ -174,10 +175,10 @@ class VODReader:
                 print(f"No VOD files found for station: {station} in the specified time interval {time_interval}")
                 self._display_available_files_table(available_files_info, settings)
                 return self
-        
+            
         # Filter by metadata properties
         metadata_filtered = []
-        if anomaly_type or any(k not in ['station', 'time_interval'] for k in settings.keys()):
+        if any(k not in ['station', 'time_interval'] for k in settings.keys()):
             for file_path in all_files:
                 meta_path = Path(str(file_path).replace('.nc', '_metadata.json'))
                 if meta_path.exists():
@@ -191,13 +192,24 @@ class VODReader:
                                 if key in ['station', 'time_interval']:
                                     continue
                                 
-                                if key in file_metadata and str(file_metadata[key]) != str(value):
+                                if key == 'anomaly_processing':
+                                    # Special handling for anomaly_processing dictionary
+                                    if 'anomaly_processing' in file_metadata:
+                                        # Check multi_parameter setting
+                                        if ('multi_parameter' in value and
+                                                ('multi_parameter' not in file_metadata['anomaly_processing'] or
+                                                 file_metadata['anomaly_processing']['multi_parameter'] != value[
+                                                     'multi_parameter'])):
+                                            matches = False
+                                            break
+                                elif key in file_metadata and str(file_metadata[key]) != str(value):
                                     matches = False
                                     break
                             
                             if matches:
                                 metadata_filtered.append(file_path)
-                    except:
+                    except Exception as e:
+                        print(f"Error reading metadata for {file_path}: {e}")
                         continue
             
             if metadata_filtered:

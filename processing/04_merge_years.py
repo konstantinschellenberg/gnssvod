@@ -3,7 +3,7 @@
 import pandas as pd
 
 from definitions import DATA
-from processing.settings import time_intervals
+from processing.settings import *
 from gnssvod.io.vodreader import VODReader
 
 if __name__ == "__main__":
@@ -12,10 +12,13 @@ if __name__ == "__main__":
     Process VOD data using time intervals from settings.py
     """
     
+    # settings that all datasets need to match
     settings = {
         'station': 'MOz',
+        'anomaly_processing': {"multi_parameter": multiple_parameters},
     }
     
+    # -----------------------------------
     # Extract unique years from intervals for display
     years = set()
     for start_date, end_date in time_intervals:

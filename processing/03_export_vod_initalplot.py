@@ -16,33 +16,43 @@ if __name__ == "__main__":
             print(f"Processing interval: {start_date} to {end_date}")
             
             # Initialize the processor for this time interval
-            processor = VODProcessor(station='MOz', plot=True, time_interval=interval)
+            processor = VODProcessor(station='MOz', plot=plot, time_interval=interval)
             
-            # Process VOD with the current time interval
-            processor.process_vod(local_file=False, overwrite=False)
-        
-            # Process with default parameters for this interval
-            processor.process_anomaly(**gnss_parameters)
+            # Process VOD with the current time interval (same for both modes)
+            processor.process_vod(local_file=False, overwrite=overwrite_vod_processing)
             
-            # Plot results for this interval
-            processor.plot_results(
-                gnssband="VOD1",
-                algo="tps",
-                save_dir=FIG,
-                figsize=(7, 4),
-                y_limits={'VOD1': (0.0, 1.2)},
-                time_zone=visualization_timezone,
-            )
+            if iterate_parameters:
+                print(f"Iterating over parameter combinations for interval {start_date} to {end_date}")
+                for param, values in gnss_parameters_iterative.items():
+                    print(f"  - {param}: {values}")
+                
+                # Process with multiple parameter combinations
+                processor.process_anomaly(**gnss_parameters_iterative)
+                # No plotting for batch parameter iteration
+            else:
+                # Process with default parameters for this interval
+                processor.process_anomaly(**gnss_parameters)
+                
+                # Plot results for this interval
+                processor.plot_results(
+                    gnssband="VOD1",
+                    algo="tps",
+                    save_dir=FIG,
+                    figsize=(7, 4),
+                    y_limits={'VOD1': (0.0, 1.2)},
+                    time_zone=visualization_timezone,
+                )
     
     else:
+        # Non-batch processing remains unchanged
         # Initialize the processor for the default case (non-batch)
-        processor = VODProcessor(station='MOz', plot=True, time_interval=single_file_interval)
+        processor = VODProcessor(station='MOz', plot=plot, time_interval=single_file_interval)
         
         if not iterate_parameters:
             print("Processing VOD with default parameters")
             
             # Process VOD with default parameters
-            processor.process_vod(local_file=False, overwrite=False)
+            processor.process_vod(local_file=False, overwrite=overwrite_vod_processing)
             
             # Run anomaly detection
             processor.process_anomaly(**gnss_parameters)
@@ -63,7 +73,7 @@ if __name__ == "__main__":
                 print(f"Processing VOD with {i}={k}")
             
             # Process VOD with multiple parameter combinations
-            processor.process_vod(local_file=False, overwrite=False)
+            processor.process_vod(local_file=False, overwrite=overwrite_vod_processing)
             
             # Run anomaly detection
             processor.process_anomaly(**gnss_parameters_iterative)
