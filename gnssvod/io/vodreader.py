@@ -18,7 +18,7 @@ class VODReader:
     
     def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None,
                  gatheryears: Dict[str, tuple] = None,
-                 transform_time: bool = True):
+                 transform_time: bool = False):
         """
         Initialize the VOD reader with optional file path, settings dictionary, or list of years.
 
@@ -317,7 +317,7 @@ class VODReader:
             from processing.settings import (
                 station, ground_station, tower_station, bands,
                 angular_resolution, temporal_resolution, agg_func,
-                anomaly_type, angular_cutoff, time_interval
+                anomaly_type, angular_cutoff, single_file_interval
             )
             
             self.default_settings = {
@@ -330,7 +330,7 @@ class VODReader:
                 'agg_func': agg_func,
                 'anomaly_type': anomaly_type,
                 'angular_cutoff': angular_cutoff,
-                'time_interval': time_interval
+                'time_interval': single_file_interval
             }
         except ImportError:
             print("Warning: Could not import settings from processing.settings")

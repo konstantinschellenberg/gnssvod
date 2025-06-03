@@ -48,37 +48,62 @@ timeintervals_closed = 'left'
 # -----------------------------------
 # SETTINGS (user) – 03_export_vod.py
 
+# general settings
+batch_run = True  # run all years in batch mode
+iterate_parameters = False  # set to True to iterate over parameters
+plot = True  # I think this option is dead
+
+# parameters
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-
+single_file_interval = ("2024-01-01", "2024-01-15")
 visualization_timezone = "etc/GMT+6"
+
+# for ke calculation:
+canopy_height = 20.0  # meters
+z0 = 1.0  # height of the ground receiver
+
+# for VOD calculation:
 angular_resolution = 0.5  # degrees
 temporal_resolution = 60  # minutes  # change from 30
-agg_func = "mean"  # or "median"
-time_interval = ("2024-04-01", "2024-05-30")
 angular_cutoff = 10 # changed from 30
+# agg_func = "mean"  # or "median"
+gnss_parameters = {
+    'angular_resolution': angular_resolution,
+    'angular_cutoff': angular_cutoff,
+    'temporal_resolution': temporal_resolution,
+    'canopy_height': canopy_height,
+    'z0': z0,
+}
 
-iterate_options = True  # set to True to iterate over parameters
-iterate_options_parameters = {
-    'angular_resolutions': [0.5, 1.0],
-    'angular_cutoffs': [10, 30],
-    'temporal_resolutions': [30, 60],
-    'max_workers': 8,  # number of workers for multiprocessing
+gnss_parameters_iterative = {
+    'angular_resolution': [0.5, 1.0],
+    'angular_cutoff': [10, 30, 60],
+    'temporal_resolution': [30, 60],
+    'max_workers': 1,  # number of workers for multiprocessing
 }
 
 # ALWAYS CALC BOTH
 # anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
-plot = True  # set to True to plot results
+time_intervals = [
+    ('2022-04-03', '2022-12-31'),
+    ('2023-01-01', '2023-06-30'),
+    ('2023-07-01', '2023-12-31'),
+    ('2024-01-01', '2024-06-30'),
+    ('2024-07-01', '2024-12-31'),
+    ('2025-01-01', '2025-05-19'),
+]
 
 # -----------------------------------
 # SETTINGS (user) – 04_merge_years.py
 
-time_intervals = {
-    '2022': ('2022-04-03', '2022-12-30'),
-    '2023': ('2023-01-01', '2023-12-30'),
-    '2024': ('2024-01-01', '2024-12-30'),
-    '2025': ('2025-01-01', '2025-05-19'),
-}
+# todo: use the time_intervals from 03_export_vod.py
+# time_intervals = {
+#     '2022': ('2022-04-03', '2022-12-30'),
+#     '2023': ('2023-01-01', '2023-12-30'),
+#     '2024': ('2024-01-01', '2024-12-30'),
+#     '2025': ('2025-01-01', '2025-05-19'),
+# }
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
@@ -88,15 +113,15 @@ Use this time interface for time series selection
 """
 
 # subset must be in tz
-time_subset = ("2024-01-01", "2024-12-31")  # ("2024-01-01", "2024-12-30")
+time_subset = ('2022-01-01', "2024-12-31")  # ("2024-01-01", "2024-12-30")
 
-load_mode = 'multi_year'  # 'multi_year' or single_file
+load_mode = 'single_file'  # 'multi_year' or single_file
 
 # single file
 single_file_settings = {
     'station': 'MOz',
-    'time_interval': ('2022-04-03', '2022-12-30'),
-    'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
+    'time_interval': ('2024-01-01', '2024-12-30'),
+    # 'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
 }
 
 # -----------------------------------

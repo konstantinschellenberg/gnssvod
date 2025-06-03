@@ -10,11 +10,10 @@ import pandas as pd
 from definitions import DATA
 import gnssvod as gv
 from processing.filepattern_finder import create_time_filter_patterns
-from processing.settings import bands, station, time_interval
-
+from processing.settings import bands, station, single_file_interval
 
 class VODProcessor:
-    def __init__(self, station=station, bands=bands, time_interval=time_interval,
+    def __init__(self, station=station, bands=bands, time_interval=None,
                  pairings=None, recover_snr=True, plot=False, overwrite=False):
         """
         Initialize the VOD processor.
@@ -36,6 +35,7 @@ class VODProcessor:
         overwrite : bool, default=False
             Whether to overwrite existing files
         """
+        self.vod_filename = None
         self.station = station
         self.bands = bands
         self.band_ids = list(bands.keys())
@@ -44,6 +44,8 @@ class VODProcessor:
         self.overwrite = overwrite
         self.recover_snr = recover_snr
         
+        self._init_interval()
+
         # Define station pairings if not provided
         if pairings is None:
             self.pairings = {station: (f"{station}1_Twr", f"{station}1_Grnd")}
@@ -58,33 +60,70 @@ class VODProcessor:
         self.hemi = None
         self.patches = None
         self.results = None
+        
+        
+    def _init_interval(self):
+        # self.time_interval must be a tuple of strings (start_date, end_date)
+        if not isinstance(self.time_interval, tuple) or len(self.time_interval) != 2:
+            raise ValueError(f"time_interval must be a tuple of two strings (start_date, end_date) but is {self.time_interval}")
+        # Ensure both dates are strings in the format 'YYYY-MM-DD'
+        for date in self.time_interval:
+            if not isinstance(date, str) or not pd.to_datetime(date, errors='coerce'):
+                raise ValueError("Both start_date and end_date must be valid date strings in 'YYYY-MM-DD' format.")
+        
     
-    def process_vod(self, angular_resolutions=[0.5], angular_cutoffs=[10],
-                    temporal_resolutions=[60], max_workers=15):
+    def process_vod(self, local_file=False, overwrite=False, **kwargs):
         """
-        Process VOD data with multiple parameter combinations in parallel.
+        Process VOD data and save to disk in temp folder to avoid memory overflow.
 
         Parameters
         ----------
-        angular_resolutions : list
-            List of angular resolution values to test
-        angular_cutoffs : list
-            List of angular cutoff values to test
-        temporal_resolutions : list
-            List of temporal resolution values to test
-        max_workers : int, optional
-            Maximum number of parallel workers
+        local_file : bool, default=False
+            Whether to return the processed VOD data
+        overwrite : bool, default=False
+            Whether to overwrite existing files
+        **kwargs : dict
+            Additional keyword arguments, such as start_date and end_date
 
         Returns
         -------
-        xarray.Dataset
-            Combined results from all parameter combinations
+        pandas.DataFrame or None
+            VOD data if local_file=True, otherwise None
         """
-        print(
-            f"Processing VOD data for {self.station} with {len(angular_resolutions) * len(angular_cutoffs) * len(temporal_resolutions)} parameter combinations")
+        # Store processing parameters for metadata
+        self.vod_processing_params = {
+            "local_file": local_file,
+            "overwrite": overwrite
+        }
+        self.vod_processing_params.update(kwargs)
+        
+        print(f"Processing VOD data for {self.station}")
+        
+        # Create a unique filename based on parameters
+        start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
+        end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
+        # Create abbreviations for parameters
+        band_abbr = f"bd{len(self.bands)}"  # Number of bands
+        snr_abbr = f"rs{int(self.recover_snr)}"  # SNR recovery (1=True, 0=False)
+        # Create filename with parameter abbreviations
+        self.vod_filename = f"vod_{self.station}_{start_date}_{end_date}_{band_abbr}_{snr_abbr}.pkl"
+        
+        # Create temp directory if it doesn't exist
+        temp_dir = DATA / 'temp'
+        temp_dir.mkdir(exist_ok=True, parents=True)
+        
+        vod_file_path = temp_dir / self.vod_filename
+        
+        # Check if file already exists and overwrite flag
+        if vod_file_path.exists() and not overwrite:
+            print(f"VOD data file already exists at {vod_file_path}. Loading from disk.")
+            # Don't load into memory yet, just confirm it exists
+            if local_file:
+                return pd.read_pickle(vod_file_path)
+            return None
         
         # Calculate VOD
-        self.vod = gv.calc_vod(
+        vod = gv.calc_vod(
             self.pattern,
             self.pairings,
             self.bands,
@@ -93,34 +132,298 @@ class VODProcessor:
         )[self.station]
         
         print("NaN values in VOD:")
-        print(self.vod.isna().mean() * 100)
+        print(vod.isna().mean() * 100)
         
-        # Generate all parameter combinations
-        param_combinations = []
-        for ar in angular_resolutions:
-            for ac in angular_cutoffs:
-                for tr in temporal_resolutions:
-                    param_combinations.append({
-                        'angular_resolution': ar,
-                        'angular_cutoff': ac,
-                        'temporal_resolution': tr
-                    })
+        # Save to disk
+        if not vod.empty:
+            vod.to_pickle(vod_file_path)
+            print(f"Saved VOD data to {vod_file_path}")
+            if local_file:
+                return vod
+        else:
+            print("No VOD data found for the specified time interval.")
+            return None
         
-        # Process parameter combinations in parallel
-        results = []
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self._run_parameter_combination, params)
-                       for params in param_combinations]
-            
-            for future in futures:
-                result = future.result()
-                if result is not None:
-                    results.append(result)
+        return None
+    
+    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, max_workers=15, overwrite=False,
+                        **kwargs):
+        """
+        Calculate VOD anomalies with multiple parameter combinations in parallel.
+        Uses saved files if they exist and overwrite=False.
+
+        Parameters
+        ----------
+        angular_resolution : list or float
+            Angular resolution values to test
+        angular_cutoff : list or float
+            Angular cutoff values to test
+        temporal_resolution : list or int
+            Temporal resolution values to test
+        max_workers : int, optional
+            Maximum number of parallel workers
+        overwrite : bool, default=False
+            Whether to overwrite existing results files
+        **kwargs : dict
+            Additional keyword arguments
+
+        Returns
+        -------
+        xarray.Dataset
+            Combined results from all parameter combinations
+        """
+        # Store anomaly parameters for metadata
+        self.anomaly_params = {
+            "angular_resolution": angular_resolution,
+            "angular_cutoff": angular_cutoff,
+            "temporal_resolution": temporal_resolution,
+            "max_workers": max_workers,
+            "overwrite": overwrite
+        }
+        self.anomaly_params.update(kwargs)
+        
+        # Transform all parameters to lists if they are not already
+        if not isinstance(angular_resolution, list):
+            angular_resolution = [angular_resolution]
+        if not isinstance(angular_cutoff, list):
+            angular_cutoff = [angular_cutoff]
+        if not isinstance(temporal_resolution, list):
+            temporal_resolution = [temporal_resolution]
+        
+        print(
+            f"Processing VOD data for {self.station} with {len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution)} parameter combinations")
+        
+        # Check if VOD data has been processed
+        if not hasattr(self, 'vod_filename'):
+            print("VOD data has not been processed. Running process_vod first.")
+            self.process_vod(overwrite=self.overwrite)
+        
+        # Create temp directory if it doesn't exist
+        temp_dir = DATA / 'temp'
+        temp_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Check for existing results files and load them if available
+        result_paths = []
+        param_combinations_to_process = []
+        
+        for ar in angular_resolution:
+            for ac in angular_cutoff:
+                for tr in temporal_resolution:
+                    # Create filename for this parameter combination
+                    # Extract year and month from time interval for compact representation
+                    start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
+                    end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
+                    time_abbr = start_date if start_date == end_date else f"{start_date}_{end_date}"
+                    filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
+                    file_path = temp_dir / filename
+                    
+                    # Check if file exists and overwrite flag
+                    if file_path.exists() and not overwrite:
+                        print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
+                        result_paths.append(str(file_path))
+                    else:
+                        # Add to list of combinations to process
+                        param_combinations_to_process.append({
+                            'angular_resolution': ar,
+                            'angular_cutoff': ac,
+                            'temporal_resolution': tr,
+                            'vod_anomaly_filename': filename
+                        })
+        
+        # Process parameter combinations that need processing
+        if param_combinations_to_process:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(self._run_parameter_combination, params)
+                           for params in param_combinations_to_process]
+                
+                for future in futures:
+                    result = future.result()
+                    if result is not None:
+                        result_paths.append(result)
         
         # Combine results into a single xarray dataset
-        self.results = self._combine_results(results)
+        self.results = self._combine_results(result_paths)
+        
+        # Save as VOD timeseries
+        if self.results is not None:
+            self._save_vod_timeseries(
+                filename=f"vod_timeseries_{self.station}",
+                overwrite=self.overwrite,
+            )
         
         return self.results
+    
+    def _save_vod_timeseries(self, filename, overwrite=False):
+        """
+        Save VOD time series data to a NetCDF file and metadata to a JSON file.
+
+        Parameters
+        ----------
+        vod_ts : pandas.DataFrame
+            VOD time series data with 'Epoch' in the index
+        filename : str
+            Filename to save (without extension)
+        overwrite : bool, optional
+            Whether to overwrite existing files
+
+        Returns
+        -------
+        path : Path
+            Path to the saved file or None if save failed
+        """
+        import os
+        
+        # Set default directory if not specified
+        directory = DATA / "timeseries"
+        directory.mkdir(parents=True, exist_ok=True)
+        
+        # Create directory if it doesn't exist
+        os.makedirs(directory, exist_ok=True)
+        
+        try:
+            # Create a copy of the dataframe to avoid modifying the original
+            df = self.results.to_dataframe().reset_index().copy()
+            
+            # Rename 'Epoch' to 'datetime'
+            df = df.rename(columns={'Epoch': 'datetime'})
+            
+            # Set 'datetime' as the index again
+            df = df.set_index('datetime')
+
+            metadata = self._create_metadata()
+            
+            start, end = pd.to_datetime(self.time_interval[0]), pd.to_datetime(self.time_interval[1])
+            
+            outname = f"{filename}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_{metadata["metadata_id"]}"
+            
+            # Add .nc extension if not already present
+            if not outname.endswith('.nc'):
+                outname = f"{outname}.nc"
+            
+            # Full file path
+            file_path = directory / outname
+            
+            # Convert to xarray dataset for NetCDF export
+            ds = df.to_xarray()
+            
+            # Check if file exists and overwrite flag
+            if file_path.exists() and not overwrite:
+                print(f"File {file_path} already exists. Pass overwrite=True to overwrite.")
+                # Still save metadata even if not overwriting the data
+                metadata = self._create_metadata()
+                save_metadata(metadata, file_path)
+                return file_path
+            
+            # Save to NetCDF
+            ds.to_netcdf(file_path)
+            
+            # Save metadata
+            self._save_metadata(metadata, file_path)
+            
+            print(f"Saved VOD time series to {file_path}")
+            return file_path
+        
+        except Exception as e:
+            print(f"Error saving file {file_path}: {str(e)}")
+            return None
+    
+    def _save_metadata(self, metadata, file_path):
+        """
+        Save metadata to a JSON file.
+
+        Parameters
+        ----------
+        metadata : dict
+            Dictionary containing metadata
+        file_path : str or Path
+            File path to save metadata to (without extension)
+
+        Returns
+        -------
+        path : Path
+            Path to the saved metadata file
+        """
+        import json
+        from pathlib import Path
+        
+        # Add .json extension
+        metadata_path = Path(str(file_path).replace('.nc', '_metadata.json'))
+        
+        try:
+            # Save metadata to JSON file
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=4, default=str)
+            
+            print(f"Saved metadata to {metadata_path}")
+            return metadata_path
+        
+        except Exception as e:
+            print(f"Error saving metadata file {metadata_path}: {str(e)}")
+            return None
+    
+    def _create_metadata(self):
+        """
+        Create metadata dictionary with all essential settings.
+
+        Returns
+        -------
+        dict
+            Dictionary containing metadata about the VOD processing
+        """
+        # Create basic metadata dictionary
+        metadata = {
+            "processing_timestamp": pd.Timestamp.now().isoformat(),
+            "station": self.station,
+            "time_interval": {
+                "start_date": pd.to_datetime(self.time_interval[0]).isoformat(),
+                "end_date": pd.to_datetime(self.time_interval[1]).isoformat()
+            },
+            "file_info": {
+                "vod_filename": self.vod_filename,
+                "pattern": self.pattern,
+            },
+            "initialization": {
+                "bands": {k: v for k, v in self.bands.items()},  # Convert to dict if needed
+                "band_ids": self.band_ids,
+                "pairings": self.pairings,
+                "recover_snr": self.recover_snr,
+                "overwrite": self.overwrite,
+                "plot": self.plot
+            }
+        }
+        
+        # Add processing parameters if they exist
+        if hasattr(self, 'vod_processing_params'):
+            metadata["vod_processing"] = self.vod_processing_params
+        
+        # Add anomaly parameters if they exist
+        if hasattr(self, 'anomaly_params'):
+            metadata["anomaly_processing"] = self.anomaly_params
+        else:
+            # If processing hasn't run, but we have the parameters as attributes
+            anomaly_params = {}
+            for param in ['angular_resolution', 'angular_cutoff', 'temporal_resolution']:
+                if hasattr(self, param):
+                    anomaly_params[param] = getattr(self, param)
+            
+            if anomaly_params:
+                metadata["anomaly_processing"] = anomaly_params
+        
+        # Add results information if available
+        if hasattr(self, 'results') and self.results is not None:
+            # Just add info about the results, not the full data
+            metadata["results"] = {
+                "variables": list(self.results.variables),
+                "dimensions": {dim: len(self.results[dim]) for dim in self.results.dims},
+                "coordinates": {coord: list(self.results[coord].values)
+                                for coord in self.results.coords
+                                if len(self.results[coord].values) < 100}  # Only include small coordinate lists
+            }
+            
+        # make a hash for the metadata
+        metadata["metadata_id"] = f"{hash(frozenset(str(metadata.items()))):x}"
+        
+        return metadata
     
     def build_hemi(self, angular_resolution, angular_cutoff):
         """
@@ -237,26 +540,34 @@ class VODProcessor:
     
     def _run_parameter_combination(self, params):
         """
-        Process a single parameter combination.
+        Process a single parameter combination and save results to disk.
 
         Parameters
         ----------
         params : dict
-            Dictionary of parameters
+            Dictionary of parameters including vod_filename
 
         Returns
         -------
-        dict
-            Results for this parameter combination
+        str
+            Path to the saved temporary file
         """
         try:
             print(f"Processing combination: {params}")
             
+            # Load VOD data from disk for this process
+            temp_dir = DATA / 'temp'
+            anomaly_file_path = temp_dir / params['vod_anomaly_filename']
+            vod_file_path = temp_dir / self.vod_filename
+            
+            # Load VOD data
+            vod = pd.read_pickle(vod_file_path)
+            
             # Build hemispheric grid
-            _, _, vod_with_cells = self.build_hemi(
-                params['angular_resolution'],
-                params['angular_cutoff']
-            )
+            hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
+            
+            # Classify VOD into grid cells
+            vod_with_cells = hemi.add_CellID(vod.copy()).drop(columns=['Azimuth', 'Elevation'])
             
             # Calculate anomalies
             _, _, vod_ts_combined = self.calculate_anomaly(
@@ -269,44 +580,58 @@ class VODProcessor:
             vod_ts_combined['angular_cutoff'] = params['angular_cutoff']
             vod_ts_combined['temporal_resolution'] = params['temporal_resolution']
             
-            return {
-                'params': params,
-                'data': vod_ts_combined
-            }
+            # Save to disk
+            vod_ts_combined.to_pickle(anomaly_file_path)
+            
+            print(f"Saved anomaly results to {anomaly_file_path}")
+            
+            return str(anomaly_file_path)
+        
         except Exception as e:
             print(f"Error processing combination {params}: {str(e)}")
             return None
     
-    def _combine_results(self, results):
+    def _combine_results(self, result_paths):
         """
-        Combine results from different parameter combinations into an xarray dataset.
+        Combine results from different parameter combinations into an xarray dataset,
+        loading each from disk to save memory.
 
         Parameters
         ----------
-        results : list
-            List of result dictionaries
+        result_paths : list
+            List of paths to temporary result files
 
         Returns
         -------
         xarray.Dataset
             Combined results
         """
-        if not results:
+        if not result_paths:
+            return None
+        
+        # Create empty list to hold dataframes
+        dfs = []
+        
+        # Load each result file and append to list
+        for path in result_paths:
+            if path is not None:
+                try:
+                    df = pd.read_pickle(path)
+                    dfs.append(df)
+                    
+                    # Remove temporary file after loading
+                    # Path(path).unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"Error loading results from {path}: {str(e)}")
+        
+        if not dfs:
             return None
         
         # Combine all DataFrames
-        combined_df = pd.concat([r['data'] for r in results])
+        combined_df = pd.concat(dfs)
         
         # Convert to xarray
         ds = combined_df.to_xarray()
-        
-        # Save the combined results
-        filename = f"vod_multi_param_{self.station}_{pd.Timestamp.now().strftime('%Y%m%d')}"
-        
-        # Save to NetCDF
-        output_path = DATA / 'ard' / f"{filename}.nc"
-        ds.to_netcdf(output_path)
-        print(f"Saved combined results to {output_path}")
         
         return ds
     
@@ -355,6 +680,7 @@ class VODProcessor:
         band_cols = [col for col in df_tps.columns if col.endswith('_anom')]
         
         # Convert datetime to timezone-aware for diurnal cycle
+        df_tps = df_tps.copy()  # Create an explicit copy to avoid SettingWithCopyWarning
         df_tps['datetime'] = pd.to_datetime(df_tps['Epoch'])
         df_tps['datetime_tz'] = df_tps['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
         df_tps['hod'] = df_tps['datetime_tz'].dt.hour + df_tps['datetime_tz'].dt.minute / 60
@@ -443,7 +769,7 @@ class VODProcessor:
         
         print(f"Generated plots for {len(param_combinations)} parameter combinations.")
     
-    def plot_by_parameter(self, gnssband="VOD1", algo="tps", figsize=(12, 6), save_dir=None, show=True,
+    def plot_by_parameter(self, new_interval=None, gnssband="VOD1", algo="tps", figsize=(12, 6), save_dir=None, show=True,
                           time_zone='etc/GMT+6', y_limits=None):
         """
         Plot results grouped by parameter type, showing how different parameter values
@@ -492,6 +818,13 @@ class VODProcessor:
             print("Invalid gnssband parameter. Please provide a string or list of strings.")
             return
         
+        if new_interval:
+            # in UTC
+            # Update time interval if provided
+            print(f"Updating time interval to {new_interval}")
+            start, end = pd.to_datetime(new_interval[0]), pd.to_datetime(new_interval[1])
+            df_tps = df_tps[(df_tps['Epoch'] >= start) & (df_tps['Epoch'] <= end)]
+            
         # Convert datetime to timezone-aware for diurnal cycle
         df_tps['datetime'] = pd.to_datetime(df_tps['Epoch'])
         df_tps['datetime_tz'] = df_tps['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
@@ -504,7 +837,7 @@ class VODProcessor:
             'angular_cutoff': 10,
             'temporal_resolution': 60
         }
-        
+
         # Create plots for each parameter
         for param in parameters:
             # Get unique values for this parameter
@@ -515,7 +848,7 @@ class VODProcessor:
                 continue
             
             # Create a viridis colormap based on the number of unique values
-            cmap = plt.cm.viridis
+            cmap = plt.cm.get_cmap('viridis', len(unique_values))
             colors = cmap(np.linspace(0, 1, len(unique_values)))
             
             # Create figure with subplots
@@ -529,12 +862,12 @@ class VODProcessor:
                 filtered_df = filtered_df[filtered_df[p] == val]
             
             # Get the title with all parameter information
-            param_info = ", ".join([f"{p}={v}" for p, v in fixed_params.items()])
+            param_info = "\n".join([f"{p} = {v}" for p, v in fixed_params.items()])
             
             # Set the title with parameter information
             fig.suptitle(f"VOD Analysis - {self.station}\n"
                          f"Effect of {param} on VOD anomalies (Algorithm: tps)\n"
-                         f"Fixed parameters: {param_info}",
+                         f"Fixed parameters:\n{param_info}",
                          fontsize=14, y=0.98)
             
             # For each unique parameter value, create grouped data and plot
@@ -554,20 +887,21 @@ class VODProcessor:
                     # Group by datetime to get mean values
                     ts_data = param_data.groupby('datetime')[band].mean().reset_index()
                     ts_data.plot(x='datetime', y=band, ax=axes[0],
-                                 label=f"{param}={value}", color=colors[i], linewidth=0.8)
+                                 label=f"{param}={value}", color=colors[i], linewidth=0.6)
                 
                 # Diurnal cycle plot using pandas
                 for band in band_cols:
                     # Group by hour of day to get mean values
                     diurnal_data = param_data.groupby('hod')[band].mean().reset_index()
                     diurnal_data.plot(x='hod', y=band, ax=axes[1],
-                                      label=f"{param}={value}", color=colors[i], linewidth=0.8)
+                                      label=f"{param}={value}", color=colors[i], linewidth=1.5)
             
             # Configure time series plot
             axes[0].set_xlabel('Date')
             axes[0].set_ylabel(f'{gnssband} Anomaly')
             axes[0].set_title('Time Series')
             axes[0].grid(True, linestyle='--', alpha=0.7)
+            axes[0].legend(loc='upper left')
             
             # Configure diurnal cycle plot
             axes[1].set_xlabel('Hour of Day (Local Time)')
@@ -575,14 +909,12 @@ class VODProcessor:
             axes[1].set_title('Diurnal Cycle')
             axes[1].set_xlim(0, 24)
             axes[1].grid(True, linestyle='--', alpha=0.7)
+            # remove  legend from axes[1]
+            axes[1].legend().remove()
             
             # Apply y-limits if provided
             if y_limits is not None and gnssband in y_limits:
-                for ax in axes:
-                    ax.set_ylim(y_limits[gnssband])
-            
-            # Add legend (only to the second plot to save space)
-            axes[1].legend(title=param)
+                axes[0].set_ylim(y_limits[gnssband])
             
             # Adjust layout
             plt.tight_layout()

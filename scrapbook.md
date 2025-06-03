@@ -1,8 +1,15 @@
 # Scrapbook for task withing `gnssvod`
 
+## 6/2/25
+
+- Save intermediate results under /temp with the hope that this reduces the memory weight in the anomaly processing
+- Final layout of multiparameter plots
+- - 
+
 ## 6/1/25
 
-- [ ] From 30min to 1h averaging
+- Implemented changing gnss processing parameters
+- Iterate over parameters to compare results
 
 ## Notes
 

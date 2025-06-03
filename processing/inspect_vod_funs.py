@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from definitions import FIG
-from processing.settings import time_interval, visualization_timezone
+from processing.settings import single_file_interval, visualization_timezone
 import matplotlib.pyplot as plt
 
 
@@ -120,9 +120,9 @@ def plot_vod_fingerprint(df, variable, title=None, figsize=(4, 7), cmap="viridis
     plt.show()
 
 
-def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8, 5)):
+def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8, 5), **kwargs):
     """
-    Plot VOD time series data for specified variables.
+    Plot VOD time series data for specified variables with customizable styling.
 
     Parameters
     ----------
@@ -135,10 +135,30 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
         Otherwise use Matplotlib
     title : str, optional
         Plot title
-    figsize : tuple, default=(10, 6)
+    figsize : tuple, default=(8, 5)
         Figure size in inches (for non-interactive plots)
-    filename : str, optional
-        If provided, save the plot to this file
+    **kwargs : dict
+        Additional customization options:
+        - linewidth, lw : float, default=1.0
+            Line width for plots
+        - colors : list or str, default=None
+            Colors for each variable (uses default color cycle if None)
+        - linestyle, ls : str or list, default='-'
+            Line style(s) for plots
+        - alpha : float, default=1.0
+            Transparency of lines
+        - marker : str, default=''
+            Marker style for data points
+        - ylim : tuple, default=None
+            Y-axis limits (min, max)
+        - legend_loc : str, default='best'
+            Legend location
+        - grid : bool, default=True
+            Whether to show grid lines
+        - filename : str, optional
+            Custom filename for saving the plot
+        - daily_average : bool, default=False
+            If True, also plot daily averages at midday with darker colors
 
     Returns
     -------
@@ -151,20 +171,70 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
     else:
         x = df.index
     
+    # Extract styling parameters from kwargs
+    linewidth = kwargs.get('linewidth', kwargs.get('lw', 1.0))
+    colors = kwargs.get('colors', None)
+    linestyle = kwargs.get('linestyle', kwargs.get('ls', '-'))
+    alpha = kwargs.get('alpha', 1.0)
+    marker = kwargs.get('marker', '')
+    ylim = kwargs.get('ylim', None)
+    legend_loc = kwargs.get('legend_loc', 'upper left')
+    grid = kwargs.get('grid', True)
+    filename = kwargs.get('filename', None)
+    daily_average = kwargs.get('daily_average', False)
+    
     if interactive == "interactive":
         # Plotly version
         import plotly.graph_objects as go
         
         fig = go.Figure()
         
-        for var in variables:
+        for i, var in enumerate(variables):
             if var in df.columns:
+                # Get color for this variable if specified
+                color = colors[i] if isinstance(colors, list) and i < len(colors) else colors
+                
                 fig.add_trace(go.Scatter(
                     x=x,
                     y=df[var],
-                    mode='lines',
-                    name=var
+                    mode='lines' if not marker else 'lines+markers',
+                    name=var,
+                    line=dict(
+                        width=linewidth if isinstance(linewidth, (int, float)) else linewidth[i],
+                        dash='solid' if linestyle == '-' else 'dash',
+                        color=color
+                    ),
+                    opacity=alpha,
+                    marker=dict(symbol=marker) if marker else dict()
                 ))
+                
+                # Add daily averages if requested
+                if daily_average:
+                    # Calculate daily averages
+                    df_copy = df.copy()
+                    df_copy['date'] = df_copy.index.date
+                    daily_avg = df_copy.groupby('date')[var].mean()
+                    
+                    # Create midday timestamps for each day
+                    midday_times = [pd.Timestamp(d).replace(hour=12, minute=0, second=0)
+                                    for d in daily_avg.index]
+                    
+                    # Darken the color for daily averages
+                    darker_color = color  # We'll use plotly's colorscale functions if color is specified
+                    
+                    fig.add_trace(go.Scatter(
+                        x=midday_times,
+                        y=daily_avg.values,
+                        mode='lines+markers',
+                        name=f"{var} (daily avg)",
+                        line=dict(
+                            width=linewidth * 1.5 if isinstance(linewidth, (int, float)) else linewidth[i] * 1.5,
+                            color=darker_color
+                        ),
+                        alpha=1,
+                        # marker=dict(size=6),
+                        opacity=1.0
+                    ))
         
         fig.update_layout(
             title=title,
@@ -175,34 +245,93 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
             width=900
         )
         
+        if ylim:
+            fig.update_layout(yaxis_range=ylim)
+        
         fig.show()
     else:
         # Matplotlib version
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
+        import matplotlib.colors as mcolors
         
         fig, ax = plt.subplots(figsize=figsize)
         
-        for var in variables:
+        for i, var in enumerate(variables):
             if var in df.columns:
-                ax.plot(x, df[var], label=var)
+                # Handle list parameters
+                lw = linewidth[i] if isinstance(linewidth, list) and i < len(linewidth) else linewidth
+                ls = linestyle[i] if isinstance(linestyle, list) and i < len(linestyle) else linestyle
+                
+                # Get color from default cycle if not specified
+                if colors is None:
+                    c = plt.rcParams['axes.prop_cycle'].by_key()['color'][
+                        i % len(plt.rcParams['axes.prop_cycle'].by_key()['color'])]
+                else:
+                    c = colors[i] if isinstance(colors, list) and i < len(colors) else colors
+                
+                # Plot with specified styling
+                line = ax.plot(x, df[var],
+                               label=var,
+                               linewidth=lw,
+                               linestyle=ls,
+                               marker=marker,
+                               color=c,
+                               alpha=alpha)
+                
+                # Add daily averages if requested
+                if daily_average:
+                    # Calculate daily averages
+                    df_copy = df.copy()
+                    df_copy['date'] = df_copy.index.date
+                    daily_avg = df_copy.groupby('date')[var].mean()
+                    
+                    # Create midday timestamps for each day
+                    midday_times = [pd.Timestamp(d).replace(hour=12, minute=0, second=0)
+                                    for d in daily_avg.index]
+                    
+                    # Darken the color for daily averages
+                    if c is not None:
+                        darker_c = mcolors.to_rgb(c)
+                        # Make color ~30% darker
+                        darker_c = tuple([max(0, x * 0.7) for x in darker_c])
+                    else:
+                        # Get the current color and darken it
+                        darker_c = mcolors.to_rgb(line[0].get_color())
+                        darker_c = tuple([max(0, x * 0.7) for x in darker_c])
+                    
+                    # Plot daily averages with thicker line and darker color
+                    ax.plot(midday_times, daily_avg.values,
+                            label=f"{var} (daily avg)",
+                            linewidth=lw * 1.5,
+                            alpha=1.0,
+                            color=darker_c)
         
         # Format date ticks
         fig.autofmt_xdate()
         
+        # Apply other customization
         ax.set_xlabel('Date')
         ax.set_ylabel('GNSS-VOD')
-        ax.legend()
+        ax.legend(loc=legend_loc, fontsize='x-small', handletextpad=0.5, labelspacing=0.3)
+        
+        if ylim:
+            ax.set_ylim(ylim)
+        
+        if grid:
+            ax.grid(True, linestyle='--', alpha=0.7)
         
         if title:
             ax.set_title(title)
         
         plt.tight_layout()
         
-        filename = f"vod_timeseries_{variables[0]}.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        # Generate filename if not provided
+        if not filename:
+            filename = f"vod_timeseries_{'_'.join(variables)}.png"
+        
+        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
         plt.show()
-
 
 def plot_vod_diurnal(df, show_std=False, figsize=(8, 6), title=None, filename="vod_diurnal_plot.png",
                      algos=None, compare_anomalies=True, diff=False):
@@ -375,127 +504,196 @@ def plot_vod_diurnal(df, show_std=False, figsize=(8, 6), title=None, filename="v
     
     return fig
 
-def plot_vod_scatter(df, **kwargs):
+
+def plot_vod_scatter(df, x_var=None, y_var=None, polarization='compare', algo='tps',
+                     hue='hour', point_size=2, add_linear_fit=False,
+                     cmap='viridis', figsize=(6, 6), title=None, filename=None, **kwargs):
     """
-    Create a scatter plot of VOD1 (1575.42 MHz) vs VOD2 (1227.60 MHz).
+    Create scatter plots of VOD data with flexible axis variable selection.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        VOD time series data from read_vod_timeseries
-    **kwargs : dict
-        Keyword arguments for customizing the plot:
-        - hue : str, default="hod"
-            Column name for color coding points
-        - point_size : float, default=1.0
-            Size of scatter points
-        - add_linear_fit : bool, default=False
-            Whether to add a linear regression line
-        - figsize : tuple, default=(8, 8)
-            Figure size in inches
-        - cmap : str, default="viridis"
-            Colormap for the scatter points
-        - alpha : float, default=0.5
-            Transparency of points
-        - title : str, optional
-            Plot title
-        - filename : str, optional
-            If provided, save the plot to this file
+        DataFrame containing VOD data
+    x_var : str, optional
+        Explicit variable name for x-axis. If provided, overrides polarization and algo settings.
+    y_var : str, optional
+        Explicit variable name for y-axis. If provided, overrides polarization and algo settings.
+    polarization : str, default='compare'
+        One of:
+        - 'compare': Compare VOD1 vs VOD2 (x=VOD1, y=VOD2)
+        - 'VOD1': Use VOD1 for both axes, but comparing algorithms
+        - 'VOD2': Use VOD2 for both axes, but comparing algorithms
+    algo : str, default='tps'
+        One of:
+        - 'tps': Use tps algorithm for both axes (when comparing polarizations)
+        - 'tp': Use tp algorithm for both axes (when comparing polarizations)
+        - 'compare': Compare tp vs tps algorithms (when using the same polarization)
+    hue : str, default='hour'
+        Column to use for point colors (usually 'hour' or 'doy')
+    point_size : float, default=2
+        Size of scatter points
+    add_linear_fit : bool, default=False
+        Whether to add a linear regression line
+    cmap : str, default='viridis'
+        Colormap for the scatter points
+    figsize : tuple, default=(6, 6)
+        Figure size (width, height) in inches
+    title : str, optional
+        Plot title (auto-generated if None)
+    filename : str, optional
+        Filename to save the plot (derived from variables if None)
 
     Returns
     -------
-    fig : matplotlib.figure.Figure
-        The created figure object
+    matplotlib.figure.Figure
+        The created figure
     """
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy import stats
     
-    # Default parameters
-    hue = kwargs.get('hue', 'hod')
-    point_size = kwargs.get('point_size', 1.0)
-    add_linear_fit = kwargs.get('add_linear_fit', False)
-    figsize = kwargs.get('figsize', (8, 8))
-    cmap = kwargs.get('cmap', 'viridis')
-    alpha = kwargs.get('alpha', 0.5)
-    title = kwargs.get('title', 'VOD1 vs VOD2 Scatter Plot')
-    filename = kwargs.get('filename', 'vod_scatter.png')
-    cutoff_percentile = kwargs.get('cutoff_percentile', 99)
+    only_outliers = kwargs.get('only_outliers', False)
     
-    # Check if required columns exist
-    required_vars = ['VOD1', 'VOD2']
-    for var in required_vars:
-        if var not in df.columns:
-            raise ValueError(f"Required variable '{var}' not found in DataFrame")
+    if only_outliers:
+        # Filter out non-outliers based on outside the 90% quantile range
+        # assure that only_outliers is a float or int
+        if not isinstance(only_outliers, (float, int)):
+            raise ValueError("only_outliers must be a float or int representing the max/min quantile. Given in percentage.")
+        # Calculate bounds for both variables first
+        bounds = {}
+        for var in [x_var, y_var]:
+            if var is not None and var in df.columns:
+                bounds[var] = {
+                    'lower': df[var].quantile((100 - only_outliers) / 100),
+                    'upper': df[var].quantile(only_outliers / 100)
+                }
+        
+        # Apply filtering once using combined condition
+        filter_condition = True
+        for var, var_bounds in bounds.items():
+            filter_condition |= (df[var] < var_bounds['lower']) | (df[var] > var_bounds['upper'])
+        
+        extraquantile_range = (100 - only_outliers) * 2
+        if len(bounds) > 0:
+            df = df[filter_condition]
     
-    if hue not in df.columns:
-        raise ValueError(f"Hue variable '{hue}' not found in DataFrame")
+    # Determine x and y variables based on parameters if not explicitly provided
+    if x_var is None or y_var is None:
+        if polarization == 'compare':
+            # Compare VOD1 vs VOD2 using the same algorithm
+            suffix = f"_anom_{algo}" if algo in ['tp', 'tps'] else ""
+            x_var = f"VOD1{suffix}"
+            y_var = f"VOD2{suffix}"
+            comparison_type = "polarization"
+        elif polarization in ['VOD1', 'VOD2']:
+            # Compare algorithms using the same polarization
+            if algo == 'compare':
+                x_var = f"{polarization}_anom_tp"
+                y_var = f"{polarization}_anom_tps"
+                comparison_type = "algorithm"
+            else:
+                # If a specific algorithm is given but we're not comparing,
+                # default to comparing polarizations
+                x_var = f"VOD1_anom_{algo}"
+                y_var = f"VOD2_anom_{algo}"
+                comparison_type = "polarization"
+        else:
+            raise ValueError("polarization must be 'compare', 'VOD1', or 'VOD2'")
+    else:
+        # Variables were explicitly provided
+        comparison_type = "custom"
+    
+    # Check if variables exist in the dataframe
+    if x_var not in df.columns:
+        raise ValueError(f"Variable {x_var} not found in the dataframe")
+    if y_var not in df.columns:
+        raise ValueError(f"Variable {y_var} not found in the dataframe")
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Calculate lower and upper bounds for both VOD1 and VOD2
-    lower = (100 - cutoff_percentile)
-    upper = 100 - lower
-    v1_min, v1_max = np.nanpercentile(df['VOD1'], [lower, upper])
-    v2_min, v2_max = np.nanpercentile(df['VOD2'], [lower, upper])
+    # Get the hue values
+    if hue in df.columns:
+        hue_values = df[hue]
+        scatter = ax.scatter(df[x_var], df[y_var], c=hue_values, s=point_size, cmap=cmap, alpha=0.7)
+        
+        # Add colorbar
+        cbar = plt.colorbar(scatter)
+        if hue == 'hour':
+            cbar.set_label('Hour of Day')
+            # Set colorbar ticks to whole hours
+            cbar.set_ticks(np.arange(0, 24, 3))
+        elif hue == 'doy':
+            cbar.set_label('Day of Year')
+        else:
+            cbar.set_label(hue.capitalize())
+    else:
+        ax.scatter(df[x_var], df[y_var], s=point_size, alpha=0.7)
     
-    # Filter data within percentile bounds
-    mask = (
-            # (df['VOD1'] >= v1_min) & (df['VOD1'] <= v1_max) &
-            (df['VOD2'] >= v2_min) & (df['VOD2'] <= v2_max)
-    )
-    df = df[mask]
-    
-    # Create scatter plot
-    sc = ax.scatter(
-        df['VOD1'],
-        df['VOD2'],
-        c=df[hue],
-        s=point_size,
-        cmap=cmap,
-        alpha=alpha,
-        edgecolor='none'
-    )
-    
-    # Add a colorbar
-    cbar = plt.colorbar(sc, ax=ax)
-    cbar.set_label(hue)
-    
-    # Add linear regression line if requested
+    # Add linear fit
     if add_linear_fit:
-        mask = ~np.isnan(df['VOD1']) & ~np.isnan(df['VOD2'])
+        # Remove NaN values for regression
+        mask = ~(np.isnan(df[x_var]) | np.isnan(df[y_var]))
         slope, intercept, r_value, p_value, std_err = stats.linregress(
-            df['VOD1'][mask], df['VOD2'][mask]
+            df[x_var][mask], df[y_var][mask]
         )
         
-        x_min, x_max = ax.get_xlim()
-        x_line = np.linspace(x_min, x_max, 100)
-        y_line = slope * x_line + intercept
+        # Calculate regression line
+        x_range = np.linspace(df[x_var].min(), df[x_var].max(), 100)
+        y_fit = slope * x_range + intercept
         
-        ax.plot(
-            x_line, y_line, '-', color='black', linewidth=1,
-            label=f'y = {slope:.3f}x + {intercept:.3f}\n$R^2 = {r_value ** 2:.3f}$'
-        )
-        ax.legend()
+        # Plot regression line
+        ax.plot(x_range, y_fit, 'r-', linewidth=1.5)
+        
+        # Add equation and R² to plot
+        equation = f"y = {slope:.3f}x + {intercept:.3f}"
+        r_squared = f"R² = {r_value ** 2:.3f}"
+        ax.annotate(f"{equation}\n{r_squared}",
+                    xy=(0.05, 0.95), xycoords='axes fraction',
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+                    verticalalignment='top')
     
-    # Labels
-    ax.set_xlabel('VOD1 (1575.42 MHz)')
-    ax.set_ylabel('VOD2 (1227.60 MHz)')
-    ax.set_title(f"{title}\ncutoff percentile: {cutoff_percentile}%")
+    # 1:1 line
+    min_val = min(df[x_var].min(), df[y_var].min())
+    max_val = max(df[x_var].max(), df[y_var].max())
+    ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
     
     # Set equal aspect ratio
-    ax.set_aspect('equal', adjustable="datalim")
+    ax.set_aspect('equal')
+    
+    # Labels and title
+    ax.set_xlabel(x_var)
+    ax.set_ylabel(y_var)
+    
+    if title is None:
+        if comparison_type == "polarization":
+            title = f"VOD1 vs VOD2 ({algo.upper()} algorithm)"
+        elif comparison_type == "algorithm":
+            title = f"{polarization} TP vs TPS algorithm comparison"
+        else:
+            title = f"{x_var} vs {y_var}"
+            
+    # add \n extraquantile_range to the tile if only_outliers is set
+    if only_outliers:
+        title += f"\nOnly Outliers ({extraquantile_range}%)"
+    
+    ax.set_title(title)
     
     # Grid
-    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.grid(True, linestyle='--', alpha=0.3)
     
-    # Save figure if filename is provided
+    # Tight layout
     plt.tight_layout()
-    plt.savefig(FIG / filename, dpi=300)
+    
+    # Save figure if filename provided
+    if filename is None:
+        filename = f"scatter_{x_var}_vs_{y_var}.png"
+    
+    plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
     plt.show()
-
-
+    
+    return fig
 
 def plot_daily_diurnal_range(df, vars_to_plot=['VOD1', 'VOD2'], figsize=(8, 5), title=None, filename=None, qq99=False):
     """
@@ -827,3 +1025,183 @@ def plot_wavelet(time, signal, scales, waveletname='cmor1.5-1.0', cmap=plt.cm.se
         plt.savefig(figname, dpi=300, bbox_inches='tight')
     
     plt.show()
+
+
+def plot_vod_by_author(df, author, save_dir=None):
+    """
+    Create VOD plots according to specific author specifications.
+    
+    1. Yitong:
+        - interval: 05-2022 to 11-2023
+        - VOD1_anom
+        - figsize=(5, 3)
+        - daily average (red)
+        - 95% percentile shaded area (light red)
+        - linewidth 1.2
+        - ylims=(0.4, 0.9)
+    2. Humphrey:
+        - interval: 05-2023 to 12-2023
+        - hourly data
+        - figsize=(10, 5)
+        - two curves: "raw" VOD1 (grey) and "processed" VOD1_anom (black), line width 0.8
+        - ylims=(0.6,1)
+    3. Burns
+        - interval: 2023, doy 210-310
+        - hourly data
+        - VOD1_anom
+        - figsize=(5, 3)
+        - ylims=(0, 1)
+        
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing VOD data
+    author : str
+        Author name ('yitong', 'humphrey', or 'burns')
+    save_dir : Path or str, optional
+        Directory to save the plot, defaults to FIG
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
+    
+    if save_dir is None:
+        save_dir = FIG
+    else:
+        save_dir = Path(save_dir)
+    
+    # Convert author to lowercase for case-insensitive matching
+    author = author.lower()
+    
+    # Make a copy of the data to avoid modifying the original
+    df = df.copy()
+    
+    if author == 'yitong':
+        # Yitong's specifications
+        # Interval: 05-2022 to 11-2023
+        start_date = '2022-01-01'
+        end_date = '2023-11-30'
+        
+        # Filter by date range
+        mask = (df.index >= start_date) & (df.index <= end_date)
+        data = df[mask].copy()
+        
+        # Calculate daily average and 95% percentile
+        qq = 95/100
+        data['date'] = data.index.date
+        daily_avg = data.groupby('date')['VOD1_anom'].mean()
+        daily_p025 = data.groupby('date')['VOD1_anom'].quantile(1-qq)
+        daily_p975 = data.groupby('date')['VOD1_anom'].quantile(qq)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(4.3, 2))
+        
+        # Convert date to datetime for proper plotting
+        dates = [pd.Timestamp(d) for d in daily_avg.index]
+        
+        # Plot 95% confidence interval
+        ax.fill_between(dates, daily_p025, daily_p975, color='red', alpha=0.2)
+        
+        # Plot daily average
+        ax.plot(dates, daily_avg, color='red', linewidth=0.5)
+        
+        # Set y-limits
+        ax.set_ylim(0.4, 0.9)
+        
+        # Labels and title
+        ax.set_xlabel('Date')
+        ax.set_ylabel('VOD1_anom')
+        ax.set_title("VOD1 Anomaly (Yitong style)")
+        
+        # Format x-axis
+        from matplotlib.dates import MonthLocator, YearLocator, DateFormatter
+        ax.xaxis.set_major_locator(MonthLocator(interval=2))
+        ax.xaxis.set_major_formatter(DateFormatter('%Y-%m'))
+        # rotate x-tick labels
+        ax.tick_params(axis='x', rotation=30)
+        
+        # make minor grid
+        ax.grid(which='minor', linestyle=':', linewidth=0.5, color='grey')
+        fig.autofmt_xdate()
+    
+    elif author == 'humphrey':
+        # Humphrey's specifications
+        # Interval: 05-2023 to 12-2023
+        start_date = '2023-05-01'
+        end_date = '2023-12-31'
+        
+        # Filter by date range
+        mask = (df.index >= start_date) & (df.index <= end_date)
+        data = df[mask].copy()
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(7, 2))
+        
+        # Plot "raw" VOD1 in grey and "processed" VOD1_anom in black
+        ax.plot(data.index, data['VOD1'], color='grey', linewidth=0.4, label='Raw VOD1')
+        ax.plot(data.index, data['VOD1_anom'], color='black', linewidth=0.4, label='Processed VOD1_anom')
+        
+        # Set y-limits
+        ax.set_ylim(0.3, 1.0)
+        
+        # Labels and title
+        ax.set_xlabel('Date')
+        ax.set_ylabel('VOD')
+        ax.set_title("VOD1 Raw and Processed (Humphrey style)")
+        
+        # format x-axis to show dates
+        from matplotlib.dates import DayLocator, DateFormatter, MonthLocator
+        ax.xaxis.set_major_locator(MonthLocator(interval=1))
+        ax.xaxis.set_major_formatter(DateFormatter('%b'))
+        
+        # ax.legend(loc='upper left')
+    
+    elif author == 'burns':
+        # Burns' specifications
+        # 2023, doy 210-310
+        year = 2023
+        start_doy = 210
+        end_doy = 310
+        
+        # Create a new column for day of year if it doesn't exist
+        if 'doy' not in df.columns:
+            df['doy'] = df.index.dayofyear
+        
+        # Filter by year and day of year
+        mask = (df.index.year == year) & (df['doy'] >= start_doy) & (df['doy'] <= end_doy)
+        data = df[mask].copy()
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(6, 2))
+        
+        # Plot hourly VOD1_anom
+        ax.plot(data.index, data['VOD1_anom'], linewidth=0.5, color='black')
+        
+        # Set y-limits
+        ax.set_ylim(0, 1)
+        
+        # Labels and title
+        ax.set_xlabel('Date')
+        ax.set_ylabel('VOD1_anom')
+        ax.set_title(f"VOD1 Anomaly, DOY {start_doy}-{end_doy} (Burns style)")
+        
+        # Format x-axis to show dates
+        from matplotlib.dates import DayLocator, DateFormatter
+        ax.xaxis.set_major_locator(DayLocator(interval=14))
+        ax.xaxis.set_major_formatter(DateFormatter('%j'))
+    
+    else:
+        raise ValueError(f"Unknown author: {author}. Choose from 'yitong', 'humphrey', or 'burns'.")
+    
+    # Save figure
+    plt.tight_layout()
+    plt.savefig(save_dir / f"vod_{author}_style.png", dpi=300)
+    plt.show()
+    
+    return fig

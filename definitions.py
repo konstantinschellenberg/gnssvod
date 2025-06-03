@@ -6,6 +6,10 @@ from pathlib import Path
 from matplotlib import pyplot as plt, rcParams
 import pandas as pd
 
+# add gnssvod to path
+import sys
+sys.path.append(str(Path(__file__).resolve().parent / "gnssvod"))
+
 rcParams['figure.figsize'] = 7, 5
 rcParams['figure.dpi'] = 300
 plt.style.use('seaborn-v0_8-whitegrid')
