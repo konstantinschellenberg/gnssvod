@@ -209,17 +209,17 @@ class VODProcessor:
         result_paths = []
         param_combinations_to_process = []
         
+        start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
+        end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
+        time_abbr = start_date if start_date == end_date else f"{start_date}_{end_date}"
+        
         for ar in angular_resolution:
             for ac in angular_cutoff:
                 for tr in temporal_resolution:
                     # Create filename for this parameter combination
                     # Extract year and month from time interval for compact representation
-                    start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
-                    end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
-                    time_abbr = start_date if start_date == end_date else f"{start_date}_{end_date}"
                     filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
                     file_path = temp_dir / filename
-                    
                     # Check if file exists and overwrite flag
                     if file_path.exists() and not overwrite:
                         print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")

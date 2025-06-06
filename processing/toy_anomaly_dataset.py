@@ -4,10 +4,14 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from analysis.calculate_anomalies import calculate_anomaly
+from analysis.calculate_anomalies import calculate_anomaly, ke_fun
 import gnssvod as gv
 from processing.export_vod_funs import plot_hemi
+from processing.settings import *
+from definitions import DATA, FIG
 
+FIG = FIG / "anomaly"
+FIG.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == '__main__':
@@ -15,9 +19,11 @@ if __name__ == '__main__':
     # Create a sample DataFrame
     
     d = 20  # canopy height in meters
+    angular_cutoff = 10  # degrees, for plotting purposes
     
     dates = pd.date_range(start='2022-01-01', periods=100, freq='10min')
     svs = [f'SV{i}' for i in range(1, 6)]
+    
     vod_dict = {
         'Epoch': np.tile(dates, len(svs) * len(dates)),
         'SV': np.repeat(svs, len(dates) * len(dates)),
@@ -95,7 +101,7 @@ if __name__ == '__main__':
     avg.plot(kind="scatter", x="Elevation_mean", y="VOD1_mean", s=3, ax=axes[1, 1])
     axes[1, 1].set_title("Elevation vs VOD")
     axes[1, 1].grid(True, alpha=0.3)
-    
+    plt.savefig(FIG / "scatter_vod_ke_pathlength.png", dpi=300)
     plt.tight_layout()
     plt.show()
     
@@ -105,21 +111,19 @@ if __name__ == '__main__':
     band_ids = ['VOD1']  # Example band IDs
     temporal_resolution = 60  # Example temporal resolution in minutes
     # Call the function
-    vod_cell.set_index(['Epoch', 'SV'], inplace=True)
-    
-    vod_ts_combined, vod_avg = calculate_anomaly(vod_cell, band_ids, temporal_resolution)
+    vod_ts_combined, vod_avg = calculate_anomaly(vod_cell, band_ids, temporal_resolution, angular_cutoff=10)
     
     # -----------------------------------
     # Plot hemispheric distributions of VOD, extinction coefficient, and path length
     # Create a figure with 3 subplots for hemispheric distributions
     # Plot the hemispheric distribution of VOD
-    plot_hemi(avg, hemi.patches(), "VOD1_mean", ax=axes[0],
-              title="VOD Distribution", clim="auto")
-    
+    plot_hemi(avg, hemi.patches(), "VOD1_mean",
+              title="VOD Distribution", clim="auto", angular_cutoff=angular_cutoff)
+
     # Plot the hemispheric distribution of extinction coefficient
-    plot_hemi(avg, hemi.patches(), "ke_mean", ax=axes[1],
-              title="Extinction Coefficient", clim="auto")
-    
+    plot_hemi(avg, hemi.patches(), "ke_mean",
+              title="Extinction Coefficient", clim="auto", angular_cutoff=angular_cutoff)
+
     # Plot the hemispheric distribution of path length
-    plot_hemi(avg, hemi.patches(), "pathlength_mean", ax=axes[2],
-              title="Path Length (m)", clim="auto")
+    plot_hemi(avg, hemi.patches(), "pathlength_mean",
+              title="Path Length (m)", clim="auto", angular_cutoff=angular_cutoff)

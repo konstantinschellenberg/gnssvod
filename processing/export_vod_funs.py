@@ -14,6 +14,7 @@ def plot_hemi(vod, patches, var="VOD1_mean", title=None, **kwargs):
     figsize = kwargs.get('figsize', (5,5))
     transform = kwargs.get('transform', None)
     clim = kwargs.get('clim', [0.0, 1.0])
+    angular_cutoff = kwargs.get('angular_cutoff', 0)
     fig, ax = plt.subplots(figsize=figsize, subplot_kw=dict(projection='polar'))
     # associate the mean values to the patches, join inner will drop patches with no data, making plotting slightly faster
     ipatches = pd.concat([patches, vod], join='inner', axis=1)
@@ -37,7 +38,7 @@ def plot_hemi(vod, patches, var="VOD1_mean", title=None, **kwargs):
     ax.grid(True, linestyle='--', linewidth=0.5)
     plt.colorbar(pc, ax=ax, location='bottom', shrink=.5, pad=0.05, label='GNSS-VOD')
     plt.tight_layout()
-    plt.savefig(FIG / f"hemi_vod_{station}.png", dpi=300)
+    plt.savefig(FIG / f"hemi_{var}_{station}.png", dpi=300)
     plt.show()
 
 
