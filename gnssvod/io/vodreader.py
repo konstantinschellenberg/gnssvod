@@ -18,7 +18,7 @@ class VODReader:
     
     def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None,
                  gatheryears: Dict[str, tuple] = None,
-                 transform_time: bool = False):
+                 transform_time: bool = True):
         """
         Initialize the VOD reader with optional file path, settings dictionary, or list of years.
 
@@ -105,7 +105,7 @@ class VODReader:
         # Extract key parameters from settings
         station = settings.get('station', self.default_settings.get('station', 'MOz'))
         time_interval = settings.get('time_interval', self.default_settings.get('time_interval'))
-        multiple_parameters = settings.get('anomaly_processing')['multi_parameter']
+        # multiple_parameters = settings.get('anomaly_processing')['multi_parameter']
         
         # Get the base directory for VOD time series files
         from definitions import DATA

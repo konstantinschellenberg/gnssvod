@@ -2,8 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import pandas as pd
+from matplotlib import rcParams
 
 from gnssvod.geodesy.coordinate import ell2cart
+
+# -----------------------------------q
+# set default matplotlib settings figsize 5,3
+rcParams['figure.figsize'] = (4,4)
+# set tight layout as default
+rcParams['figure.autolayout'] = True
+# standard point size is 3
+rcParams['lines.markersize'] = .5
+
 
 # -----------------------------------
 # SETTINGS (user) - general
@@ -58,33 +68,27 @@ overwrite_anomaly_processing = True  # overwrite existing anomaly processing fil
 # parameters
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-single_file_interval = ("2024-04-01", "2024-11-30")
+single_file_interval = ('2024-04-01', "2024-10-30")
 visualization_timezone = "etc/GMT+6"
 
 # for ke calculation:
 canopy_height = 20.0  # meters
 z0 = 1.0  # height of the ground receiver
 
-# for VOD calculation:
-angular_resolution = 0.5  # degrees
-temporal_resolution = 60  # minutes  # change from 30
-angular_cutoff = 10 # changed from 30
+# for VOD calculation
+angular_resolution = [0.5]  # degrees
+temporal_resolution = [60]  # minutes  # change from 30
+angular_cutoff = [10] # changed from 30
 # agg_func = "mean"  # or "median"
+
 gnss_parameters = {
-    'angular_resolution': angular_resolution,
+    'angular_resolution': angular_resolution,  # must be a list
     'angular_cutoff': angular_cutoff,
     'temporal_resolution': temporal_resolution,
+    'make_ke': True,  # whether to calculate ke
     'canopy_height': canopy_height,
     'z0': z0,
     'overwrite': overwrite_anomaly_processing,  # overwrite existing VOD processing files
-}
-
-gnss_parameters_iterative = {
-    'angular_resolution': [0.5, 1.0],
-    'angular_cutoff': [10, 30, 60],
-    'temporal_resolution': [30, 60],
-    'max_workers': 1,  # number of workers for multiprocessing
-    'overwrite': overwrite_anomaly_processing,  # overwrite existing anomaly processing files
 }
 
 # ALWAYS CALC BOTH
@@ -112,14 +116,14 @@ Use this time interface for time series selection
 """
 
 # subset must be in tz
-time_subset = ('2022-01-01', "2024-12-31")  # ("2024-01-01", "2024-12-30")
+time_subset = ('2022-01-01', "2024-12-30")  # ("2024-01-01", "2024-12-30")
 
-load_mode = 'final_vod'  # 'multi_year' or single_file or supply_path
+load_mode = 'single_file'  # 'multi_year' or single_file or supply_path
 
 # single file
 single_file_settings = {
     'station': 'MOz',
-    'time_interval': ('2024-01-01', '2024-12-30'),
+    'time_interval':  ('2024-04-01', "2024-10-30"),
     # 'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
 }
 

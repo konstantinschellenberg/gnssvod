@@ -6,6 +6,15 @@ from analysis.VODProcessor import VODProcessor
 from processing.settings import *
 
 if __name__ == "__main__":
+    
+    general_settings = {
+        "canopy_height": 20,  # Example canopy height in meters
+        "make_ke": True,  # Whether to calculate ke
+    }
+    
+    # udate general_settings
+    
+    
     if batch_run:
         print(f"Running in batch mode for {len(time_intervals)} time intervals")
         
@@ -23,11 +32,11 @@ if __name__ == "__main__":
             
             if iterate_parameters:
                 print(f"Iterating over parameter combinations for interval {start_date} to {end_date}")
-                for param, values in gnss_parameters_iterative.items():
+                for param, values in gnss_parameters.items():
                     print(f"  - {param}: {values}")
                 
                 # Process with multiple parameter combinations
-                processor.process_anomaly(**gnss_parameters_iterative)
+                processor.process_anomaly(**gnss_parameters)
                 # No plotting for batch parameter iteration
             else:
                 # Process with default parameters for this interval
@@ -70,14 +79,14 @@ if __name__ == "__main__":
         
         if iterate_parameters:
             print(f"Iterating over parameter combinations")
-            for i, k in gnss_parameters_iterative.items():
+            for i, k in gnss_parameters.items():
                 print(f"Processing VOD with {i}={k}")
             
             # Process VOD with multiple parameter combinations
             processor.process_vod(local_file=False, overwrite=overwrite_vod_processing)
             
             # Run anomaly detection
-            processor.process_anomaly(**gnss_parameters_iterative)
+            processor.process_anomaly(**gnss_parameters)
             
             # Plot by parameter
             zoom_in_interval = ('2024-04-01', '2024-06-15')  # Adjust this as needed

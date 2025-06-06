@@ -1,5 +1,9 @@
 # Scrapbook for task withing `gnssvod`
 
+## 6/5/25
+
+- ke for each observation (sv, time, elevation, azimuth)
+
 ## 6/3/25
 
 | Metric name                                         | Symbol            | Mathematical representation          | Rationale                                           |

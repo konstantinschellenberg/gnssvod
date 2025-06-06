@@ -24,16 +24,15 @@ vod = reader.get_data(format='long')
 # -----------------------------------
 # filter for
 
-"""
-temporal_resolution = 60
-angular_resolution = 0.5
-angular_cutoff = 10
-algo = 'tp'
-"""
+algo = 'tps'
 
-vod = vod[(vod['temporal_resolution'] == temporal_resolution) &
-          (vod['angular_resolution'] == angular_resolution) &
-          (vod['angular_cutoff'] == angular_cutoff)].copy()
+# temporal_resolution = 60
+# angular_resolution = 0.5
+# angular_cutoff = 10
+#
+# vod = vod[(vod['temporal_resolution'] == temporal_resolution) &
+#           (vod['angular_resolution'] == angular_resolution) &
+#           (vod['angular_cutoff'] == angular_cutoff)].copy()
 
 
 if vod is None:
@@ -41,13 +40,21 @@ if vod is None:
 
 # -----------------------------------
 # selecting only the 'tps' algorithm
-vod_ts = vod[vod['algo'] == 'tp'].copy()
+vod_ts = vod[vod['algo'] == algo].copy()
 # get both algos to compare them
 vod_algo = reader.get_data(format='wide').copy()
 
 # -----------------------------------
 # todo: filter for gnss_parameters!!
 
+# -----------------------------------
+# fail fast ke*d
+d_ast = canopy_height - z0  # d_ast is the height of the canopy above the ground receiver
+
+# todo: wouldn't you need to multiply by the mean path length? not the height of the canopy?
+# make new columns called <band>_kevod_anom
+vod_ts['VOD1_kevod_anom'] = vod_ts["VOD1_ke_anom"] * d_ast
+vod_ts['VOD2_kevod_anom'] = vod_ts["VOD2_ke_anom"] * d_ast
 # -----------------------------------
 # subset time
 
@@ -69,19 +76,23 @@ if time_subset:
 # time series plot
 # Static matplotlib plot
 
-figsize = (7, 5)
+figsize = (5, 4)
 
-plot = False
+plot = True
 if plot:
     plot_vod_timeseries(vod_ts, ['VOD1_anom'], figsize=figsize)
+    plot_vod_timeseries(vod_ts, ['VOD1_kevod_anom'], figsize=figsize)
+    plot_vod_timeseries(vod_ts, ['VOD1_ke_anom'], figsize=figsize)
+
+    # plot_vod_timeseries(vod_ts, ['VOD1_anom'], figsize=figsize)
     # plot_vod_timeseries(vod_ts, ['VOD2', 'VOD2_anom'], title="VOD Time Series")
 
     # Interactive plotly plot
-    # plot_vod_timeseries(vod_ts, ['VOD1_anom', 'VOD1_std'], interactive="interactive")
+    # plot_vod_timeseries(vod_ts, ['VOD1_anom', 'VOD2_anom'], interactive="interactive")
     
     # Save plot to file
     # plot_vod_timeseries(vod_ts, ['VOD2_anom'], figsize=figsize)
-    
+
 # -----------------------------------
 
 compare_algos = False
@@ -122,7 +133,7 @@ if compare_algos:
     - ylims=(0, 1)
 """
 
-authors = True
+authors = False
 
 if authors:
     # only run, if data (time_subset) encompasses 2022-2024 data
@@ -154,18 +165,19 @@ if plot:
 
 # -----------------------------------
 # fingerprint plot
-plot = False
+plot = True
 if plot:
-    plot_vod_fingerprint(vod_ts, 'VOD1', title="Comparing algorithms (1/3)\n No anomaly calculation\n\n band: (L1)")
-    plot_vod_fingerprint(vod_algo, 'VOD1_anom_tp', title="Comparing algorithms (2/3)\n Anomaly calculated with Vincent's method\n (theta, psi)\n band: (L1)")
-    plot_vod_fingerprint(vod_algo, 'VOD1_anom_tps', title="Comparing algorithms (3/3)\n Anomaly calculated with Konstantin's extension\n (theta, psi, sat)\n band: (L1)")
+    # plot_vod_fingerprint(vod_ts, 'VOD1', title="Comparing algorithms (1/3)\n No anomaly calculation\n\n band: (L1)")
     
-    # nsat
-    plot_vod_fingerprint(vod_ts, 'S2_ref')
-
+    # -----------------------------------
+    # extinction fingerprint
+    # plot_vod_fingerprint(vod_algo, 'VOD1_ke_anom_tp')
+    plot_vod_fingerprint(vod_ts, 'VOD1_ke_anom', title="VOD1 Anomaly Fingerprint\n TPS Algorithm")
+    plot_vod_fingerprint(vod_ts, 'VOD1_kevod_anom', title="$VOD_{rectified} = k_e * d$")
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom', title="VOD")
 # -----------------------------------
 # Two-variable scatter plot
-plot = True
+plot = False
 if plot:
     # With linear fit and custom settings
     # Compare polarizations using tps algorithm

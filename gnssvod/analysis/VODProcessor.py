@@ -174,6 +174,15 @@ class VODProcessor:
         xarray.Dataset
             Combined results from all parameter combinations
         """
+        
+        # Transform all parameters to lists if they are not already
+        if not isinstance(angular_resolution, list):
+            angular_resolution = [angular_resolution]
+        if not isinstance(angular_cutoff, list):
+            angular_cutoff = [angular_cutoff]
+        if not isinstance(temporal_resolution, list):
+            temporal_resolution = [temporal_resolution]
+            
         # Store anomaly parameters for metadata
         self.anomaly_params = {
             "angular_resolution": angular_resolution,
@@ -183,15 +192,7 @@ class VODProcessor:
             "overwrite": overwrite
         }
         self.anomaly_params.update(kwargs)
-        
-        # Transform all parameters to lists if they are not already
-        if not isinstance(angular_resolution, list):
-            angular_resolution = [angular_resolution]
-        if not isinstance(angular_cutoff, list):
-            angular_cutoff = [angular_cutoff]
-        if not isinstance(temporal_resolution, list):
-            temporal_resolution = [temporal_resolution]
-        
+
         print(
             f"Processing VOD data for {self.station} with {len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution)} parameter combinations")
         
@@ -229,8 +230,10 @@ class VODProcessor:
                             'angular_resolution': ar,
                             'angular_cutoff': ac,
                             'temporal_resolution': tr,
-                            'vod_anomaly_filename': filename
+                            'vod_anomaly_filename': filename,
                         })
+                        # update with kwargs
+                        param_combinations_to_process[-1].update(kwargs)
         
         # Process parameter combinations that need processing
         if param_combinations_to_process:
@@ -428,34 +431,6 @@ class VODProcessor:
         
         return metadata
     
-    def build_hemi(self, angular_resolution, angular_cutoff):
-        """
-        Build hemispheric grid for VOD data.
-
-        Parameters
-        ----------
-        angular_resolution : float
-            Resolution of angular grid
-        angular_cutoff : float
-            Cutoff angle for the grid
-
-        Returns
-        -------
-        tuple
-            (hemi, patches, vod_with_cells)
-        """
-        # Initialize hemispheric grid
-        hemi = gv.hemibuild(angular_resolution, angular_cutoff)
-        
-        # Get patches for plotting
-        patches = hemi.patches()
-        
-        # Classify VOD into grid cells
-        vod_with_cells = hemi.add_CellID(self.vod.copy()).drop(columns=['Azimuth', 'Elevation'])
-        
-        return hemi, patches, vod_with_cells
-    
-    
     def _run_parameter_combination(self, params):
         """
         Process a single parameter combination and save results to disk.
@@ -485,14 +460,17 @@ class VODProcessor:
             hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
             
             # Classify VOD into grid cells
-            vod_with_cells = hemi.add_CellID(vod.copy()).drop(columns=['Azimuth', 'Elevation'])
+            vod_with_cells = hemi.add_CellID(vod.copy())
 
+            anomaly_params = {
+                "vod_with_cells": vod_with_cells,
+                "band_ids": self.band_ids,
+            }
+            # update with params
+            anomaly_params.update(params)
+            
             # Calculate anomalies
-            vod_ts_combined, vod_avg = calculate_anomaly(
-                vod_with_cells=vod_with_cells,
-                band_ids=self.band_ids,
-                temporal_resolution=params['temporal_resolution'],
-            )
+            vod_ts_combined, vod_avg = calculate_anomaly(**anomaly_params)
             
             # Add parameter columns
             vod_ts_combined['angular_resolution'] = params['angular_resolution']

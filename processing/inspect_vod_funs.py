@@ -554,6 +554,7 @@ def plot_vod_scatter(df, x_var=None, y_var=None, polarization='compare', algo='t
     from scipy import stats
     
     only_outliers = kwargs.get('only_outliers', False)
+    add_1_to_1_line = kwargs.get('add_1_to_1_line', True)
     
     if only_outliers:
         # Filter out non-outliers based on outside the 90% quantile range
@@ -655,10 +656,11 @@ def plot_vod_scatter(df, x_var=None, y_var=None, polarization='compare', algo='t
                     verticalalignment='top')
     
     # 1:1 line
-    min_val = min(df[x_var].min(), df[y_var].min())
-    max_val = max(df[x_var].max(), df[y_var].max())
-    ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
-    
+    if add_1_to_1_line:
+        min_val = min(df[x_var].min(), df[y_var].min())
+        max_val = max(df[x_var].max(), df[y_var].max())
+        ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
+        
     # Set equal aspect ratio
     ax.set_aspect('equal')
     

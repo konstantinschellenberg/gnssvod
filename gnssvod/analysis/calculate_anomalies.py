@@ -5,6 +5,22 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+from processing.export_vod_funs import plot_hemi
+
+
+def ke_fun(vod, d, elevation):
+    """
+    vod: vegetation optical depth
+    d: canopy height
+    elevation: elevation angle in degrees
+    ke: effective extinction coefficient
+    """
+    theta = 90 - elevation  # convert elevation to zenith angle
+    pathlength = d / np.cos(np.deg2rad(theta))
+    ke = vod / pathlength
+    return ke, pathlength
+
+
 def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     """
     Calculate VOD anomalies using both methods.
@@ -46,7 +62,31 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
         vod_avg : pandas.DataFrame
             Average VOD values per grid cell
     """
-
+    
+    # -----------------------------------
+    # make ke per band and add to the band_ids if make_ke is True
+    make_ke = kwargs.get('make_ke', False)  # whether to calculate extinction coefficient
+    if make_ke:
+        canopy_height = kwargs.get('canopy_height', None)
+        z0 = kwargs.get('z0', None)  # height of the ground receiver
+        di = canopy_height - z0
+        if canopy_height is None:
+            raise ValueError("Canopy height must be provided if extinction coefficient is to be calculated.")
+        # Calculate ke for each band and add to vod_with_cells
+        for band in band_ids:
+            vod_with_cells[f"{band}_ke"], _ = ke_fun(
+                vod_with_cells[band],
+                d=di,
+                elevation=vod_with_cells["Elevation"]
+            )
+            # todo: add a vod_rect as ke*d to with tau values
+        # append 'VOD_ke' to band_ids
+        band_ids = [f"{band}_ke" for band in band_ids] + band_ids  # add ke bands to the list
+        
+    # -----------------------------------
+    # clean df
+    
+    vod_with_cells = vod_with_cells.drop(columns=["Azimuth", "Elevation"], errors='ignore')
     
     # -----------------------------------
     # Method 1: Vincent's method (phi_theta) - short tp
@@ -120,7 +160,7 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
                 bin_edges.append(bin_groups[max(bin_groups.keys())].max())
                 
                 from matplotlib import pyplot as plt
-                plt.figure(figsize=(10, 6))
+                plt.figure(figsize=(5, 3))
                 band_means.hist(bins=30, alpha=0.5, label='VOD Means')
                 for edge in bin_edges:
                     plt.axvline(edge, color='red', linestyle='--')

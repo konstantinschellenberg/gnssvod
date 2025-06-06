@@ -86,6 +86,14 @@ if __name__ == "__main__":
             _dir = DATA / 'ard'
             _dir.mkdir(exist_ok=True, parents=True)
             vod_combined.to_csv(_dir / outname, index=True)
+            
+            # also save as pickle file
+            vod_combined.to_pickle(_dir / outname.replace('.csv', '.pkl'))
+            # Print success message
+            
+            # save also as pyarrow
+            vod_combined.to_parquet(_dir / outname.replace('.csv', '.parquet'), index=True)
+            
             print(f"Combined VOD data saved to {_dir / outname}.")
         else:
             print("No valid VOD data was found in any interval.")

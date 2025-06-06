@@ -54,7 +54,7 @@ def calc_vod(filepattern,pairings,bands,interval=None,recover_snr=False):
         # filter files by date if interval is provided
         files_ = get_filelist({'': filepattern})
         # filter files by date
-        files = {'': filter_files_by_date(files_[""], interval)}
+        files = {'': filter_files_by_date(files_[""], interval) }
     else:
         # if no interval is provided, use all files
         files = get_filelist({'': filepattern})
