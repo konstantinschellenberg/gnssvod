@@ -1,4 +1,19 @@
-# Scrapbook for task withing `gnssvod`
+# Scrapbook for task within `gnssvod`
+
+## 6/6/25
+
+- Change standard time series aggregation to "median" instead of "mean" (more robust)
+- NO BeiDou satellites tracked!
+
+From https://www.gpsrchive.com/Shared/Satellites/Satellites.html#Satellite%20Identification
+
+| SBAS PRN | System  | Identification      | NORAD ID | Azimuth | Elevation | Launch Date       | Checked date |
+|----------|---------|---------------------|----------|---------|-----------|-------------------|--------------|
+| 131      | WAAS    | Eutelsat 117 West B | 41589    | 216.5   | 31.1      | June 15, 2016     | June 6, 2025 |
+| 133      | WAAS    | SES-15              | 42709    | 230.3   | 38.3      | May 18, 2017      | June 6, 2025 |
+| 135      | WAAS    | Galaxy 30           | 46114    | 225.8   | 33.7      | August 15, 2020   | June 6, 2025 |
+| 148      | AL-SBAS | ALCOMSAT 1          | 43039    | 104.6   | 8.9       | December 10, 2017 | June 6, 2025 |
+| 158      | -       | -                   | -        | -       | -         | -                 | -            |
 
 ## 6/5/25
 

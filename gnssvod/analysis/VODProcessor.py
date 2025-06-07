@@ -16,8 +16,9 @@ from definitions import DATA
 import gnssvod as gv
 from gnssvod.io.preprocess import get_filelist
 from processing.filepattern_finder import create_time_filter_patterns, filter_files_by_date
-from processing.settings import bands, station
+from processing.settings import bands, station, moflux_coordinates, add_sbas_position_manually
 from gnssvod.analysis.calculate_anomalies import calculate_anomaly
+from satellite_information import sbas_ident
 
 
 # Process files individually and concatenate the DataFrames
@@ -36,6 +37,71 @@ def process_file(file_path):
     except Exception as e:
         print(f"Error processing {file_path}: {e}")
         return pd.DataFrame()
+
+
+def replace_sbas_coordinates(vod, sbas_ident):
+    """
+    Replace Azimuth and Elevation values for SBAS satellites with fixed values.
+
+    Add the positions of the geostationary satellites
+    - sbas: ['S58', 'S35', 'S33', 'S31', 'S48']
+      probably corresponds to the following:
+      135, 133, 131, 148, 158
+    - Azi/Ele are in 0.1 resolution
+    
+    Tasks:
+    - Find the corresponding PRN for check databases for sbas
+    - Add the positions of the geostationary satellites based on the MOFLUX location
+    - `moflux_coordinates`
+    
+    sbas_ident:
+    {'S31': {'system': 'WAAS', 'Azimuth': 216.5, 'Elevation': 31.1, 'PRN': '131'},
+     'S33': {'system': 'WAAS', 'Azimuth': 230.3, 'Elevation': 38.3, 'PRN': '133'},
+     'S35': {'system': 'WAAS', 'Azimuth': 225.8, 'Elevation': 33.7, 'PRN': '135'},
+     'S48': {'system': 'WAAS', 'Azimuth': 104.6, 'Elevation': 8.9, 'PRN': '148'}}
+     
+    Parameters
+    ----------
+    vod : pandas.DataFrame
+        DataFrame containing GNSS VOD data with SV in the index
+    sbas_ident : dict
+        Dictionary mapping SBAS SVs to their fixed position information
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with updated Azimuth and Elevation values for SBAS satellites
+    """
+    # List of SBAS satellites to process
+    sbas_list = ['S31', 'S33', 'S35', 'S48']
+    print(f"Replacing Azimuth and Elevation for SBAS satellites: {sbas_list}")
+    
+    # Create a copy to avoid warnings
+    vod_updated = vod.copy()
+    
+    # Reset index to make SV a column for easier filtering
+    vod_reset = vod_updated.reset_index()
+    
+    # For each SBAS satellite
+    for sv in sbas_list:
+        if sv in sbas_ident:
+            # Get the fixed values from sbas_ident
+            fixed_azi = np.float16(sbas_ident[sv]['Azimuth'])
+            fixed_ele = np.float16(sbas_ident[sv]['Elevation'])
+            
+            # Create mask for this SV
+            mask = vod_reset['SV'] == sv
+            
+            if mask.any():
+                # Replace values
+                vod_reset.loc[mask, 'Azimuth'] = fixed_azi
+                vod_reset.loc[mask, 'Elevation'] = fixed_ele
+                print(f"  Updated {mask.sum()} rows for {sv}: Azimuth={fixed_azi}, Elevation={fixed_ele}")
+    
+    # Set index back to original structure
+    vod_updated = vod_reset.set_index(['Epoch', 'SV'])
+    
+    return vod_updated
 
 class VODProcessor:
     def __init__(self, station=station, bands=bands, time_interval=None,
@@ -60,6 +126,7 @@ class VODProcessor:
         overwrite : bool, default=False
             Whether to overwrite existing files
         """
+        self.anomaly_params = None
         self.vod_processing_params = None
         self.vod_filename = None
         self.station = station
@@ -80,6 +147,7 @@ class VODProcessor:
         
         # Create pattern for file search
         self.pattern = str(DATA / "gather" / f"{create_time_filter_patterns(time_interval)['nc']}")
+        self.temp_dir = DATA / 'temp'  # Directory for temporary files
         
         # Initialize data containers
         self.vod = None
@@ -192,45 +260,35 @@ class VODProcessor:
         self.vod_filename = f"vod_{self.station}_{start_date}_{end_date}_{band_abbr}_{snr_abbr}"
         
         # Create temp directory if it doesn't exist
-        temp_dir = DATA / 'temp'
-        temp_dir.mkdir(exist_ok=True, parents=True)
+        self.vod_file_temp = self.temp_dir / (self.vod_filename + ".parquet")
+        self.vod_file_temp.parent.mkdir(exist_ok=True, parents=True)
         
-        vod_file_concatted = temp_dir / (self.vod_filename + "_concat" + ".parquet")
-        vod_file_calculated = temp_dir / (self.vod_filename + "_calc" + ".parquet")
-
+        # Check if file already exists and overwrite flag
+        if self.vod_file_temp.exists() and not overwrite:
+            print(f"VOD data file already exists at {self.vod_file_temp}. Loading from disk.")
+            return None
+        
         # -----------------------------------
         # concat all files
+        """
+        Can't debug after this point because of dask client initialization
+        –> Consider commenting it out in self._concat_nc_files
+        """
+
+        print(f"Concatenating NC files matching pattern: {self.pattern}")
+        # This will return a Dask DataFrame
+        df_combind_ncs = self._concat_nc_files(
+            filepattern=self.pattern,
+            interval=self.time_interval,
+            n_workers=15,  # Adjust as needed
+        )
         
-        if vod_file_concatted.exists() and not overwrite:
-            print(f"VOD data file already exists at {vod_file_concatted}. Loading from disk.")
-            # Don't load into memory yet, just confirm it exists
-        else:
-            print(f"Combining VOD data files matching pattern: {self.pattern}")
-            # Combine all NetCDF files matching the pattern
-            
-            # This will return a Dask DataFrame
-            combind_ncs = self._concat_nc_files(
-                filepattern=self.pattern,
-                interval=self.time_interval,
-                n_workers=15,  # Adjust as needed
-            )
-            
-            # save combined data (dask) to parquet file
-            if not combind_ncs.empty:
-                combind_ncs.to_parquet(vod_file_concatted, engine='pyarrow')
-                print(f"Saved combined VOD data to {vod_file_concatted}")
-            
         # -----------------------------------
         # Calculate VOD
         
-        # Check if file already exists and overwrite flag
-        if vod_file_calculated.exists() and not overwrite:
-            print(f"VOD data file already exists at {vod_file_calculated}. Loading from disk.")
-            return None
-        
-        print(f"Calculating VOD for {self.station} using file {vod_file_concatted}")
+        print("Calculating VOD...")
         vod = gv.calc_vod(
-            vod_file_concatted,
+            df_combind_ncs,
             self.pairings,
             self.bands,
             recover_snr=self.recover_snr
@@ -238,11 +296,10 @@ class VODProcessor:
         
         # Save to disk
         try:
-            # todo: finished here"!!!
             # compute vod while saving as parquet
-            vod.compute(optimize_graph=True).to_parquet(vod_file_calculated, engine='pyarrow')
+            vod.compute(optimize_graph=True).to_parquet(self.vod_file_temp, engine='pyarrow')
         except Exception as e:
-            print(f"Error saving VOD data to {vod_file_calculated}: {e}")
+            print(f"Error saving VOD data to {self.vod_file_temp}: {e}")
             return None
         return None
     
@@ -292,21 +349,13 @@ class VODProcessor:
         }
         self.anomaly_params.update(kwargs)
 
-        print(
-            f"Processing VOD data for {self.station} with {len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution)} parameter combinations")
-        
-        # Check if VOD data has been processed
-        if not hasattr(self, 'vod_filename'):
-            print("VOD data has not been processed. Running process_vod first.")
-            self.process_vod(overwrite=self.overwrite)
-        
-        # Create temp directory if it doesn't exist
-        temp_dir = DATA / 'temp'
-        temp_dir.mkdir(exist_ok=True, parents=True)
+        print("++++++++++++++++++++++++++++++++")
+        print(f"Processing VOD data for {self.station} with "
+              f"{len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution)} "
+              f"parameter combinations")
         
         # Check for existing results files and load them if available
         result_paths = []
-        param_combinations_to_process = []
         
         start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
         end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
@@ -318,7 +367,7 @@ class VODProcessor:
                     # Create filename for this parameter combination
                     # Extract year and month from time interval for compact representation
                     filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
-                    file_path = temp_dir / filename
+                    file_path = self.temp_dir / filename
                     # Check if file exists and overwrite flag
                     if file_path.exists() and not overwrite:
                         print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
@@ -535,20 +584,26 @@ class VODProcessor:
             # Load VOD data from disk for this process
             temp_dir = DATA / 'temp'
             anomaly_file_path = temp_dir / params['vod_anomaly_filename']
-            vod_file_path = temp_dir / self.vod_filename
+            vod_file_path = temp_dir / (self.vod_filename + ".parquet")
             
-            # Load VOD data
-            vod = pd.read_pickle(vod_file_path)
+            # read parquet as pandas DataFrame
+            vod = pd.read_parquet(vod_file_path)
+            vod.set_index('SV', inplace=True, append=True)  # Ensure 'Epoch' is the index
             
+            # add position of sbas satellites (why did they got lost?)
+            if add_sbas_position_manually:
+                print("Replacing SBAS coordinates with fixed values...")
+                vod = replace_sbas_coordinates(vod, sbas_ident)
+                
             # Build hemispheric grid
             hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
             
             # Classify VOD into grid cells
-            vod_with_cells = hemi.add_CellID(vod.copy())
+            print("Adding CellID to VOD data...")
+            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)  # Drop position without data
             
             # Calculate anomalies using memory-efficient approach
             anomaly_params = {
-                "vod_with_cells": vod_with_cells,  # Pass pandas DataFrame directly
                 "band_ids": self.band_ids,
                 "time_chunk_size": 500,  # Process 500 time steps at once
                 "sv_batch_size": 5,  # Process 5 satellites at once
@@ -558,7 +613,8 @@ class VODProcessor:
             anomaly_params.update(params)
             
             # Calculate anomalies (now accepts pandas DataFrame directly)
-            vod_ts_combined, vod_avg = calculate_anomaly(**anomaly_params)
+            print("Calculating anomalies...")
+            vod_ts_combined, vod_avg = calculate_anomaly(vod=vod_with_cells, **anomaly_params)
             
             # Add parameter columns
             vod_ts_combined['angular_resolution'] = params['angular_resolution']

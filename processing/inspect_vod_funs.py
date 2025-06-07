@@ -8,6 +8,164 @@ from processing.settings import single_file_interval, visualization_timezone
 import matplotlib.pyplot as plt
 
 
+def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
+                       cmap='tab10', title=None, filename=None, **kwargs):
+    """
+    Plot the diurnal cycle of variables with standard deviation bands.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing data with datetime index or 'hod' column
+    vars : list of tuples or list of str
+        List of variable tuples (for grouped plotting) or list of variable names
+        Each tuple contains variables to plot in the same subplot
+    normalize : str or None, default=None
+        Normalization method:
+        - 'daily': Normalize by daily mean
+        - 'zscore': Apply z-score normalization (standardize)
+        - None: No normalization
+    figsize : tuple, default=(12, 8)
+        Figure size (width, height) in inches
+    ncols : int, default=2
+        Number of columns in the subplot grid
+    cmap : str, default='tab10'
+        Colormap for the variables
+    title : str, optional
+        Overall figure title
+    filename : str, optional
+        If provided, saves the plot to this filename
+    **kwargs : dict
+        Additional arguments for plot customization
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.cm import get_cmap
+    import pandas as pd
+    
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+    
+    # Ensure 'hod' is in the dataframe
+    if 'hod' not in df.columns:
+        # Try to extract hour from index if it's a datetime
+        if isinstance(df.index, pd.DatetimeIndex):
+            df['hod'] = df.index.hour
+        else:
+            # Try to find a datetime column
+            datetime_cols = [col for col in df.columns if 'datetime' in col.lower()]
+            if datetime_cols and pd.api.types.is_datetime64_any_dtype(df[datetime_cols[0]]):
+                df['hod'] = df[datetime_cols[0]].dt.hour
+            else:
+                raise ValueError("DataFrame must contain 'hod' column or have a datetime index")
+    
+    # Validate normalization parameter
+    valid_normalizations = ['daily', 'zscore', None]
+    if normalize not in valid_normalizations:
+        raise ValueError(f"normalize must be one of {valid_normalizations}")
+    
+    # Convert single variable names to tuples if needed
+    if vars and not all(isinstance(v, (list, tuple)) for v in vars):
+        vars = [(v,) for v in vars]
+    
+    # Calculate number of rows needed
+    nrows = (len(vars) + ncols - 1) // ncols
+    
+    # Create figure and axes
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, **kwargs)
+    
+    # Ensure axes is always iterable
+    if nrows * ncols == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # Get colormap
+    colormap = get_cmap(cmap)
+    
+    # Process each variable group
+    for i, var_tuple in enumerate(vars):
+        if i >= len(axes):
+            break
+        
+        ax = axes[i]
+        
+        # For each variable in the tuple
+        for j, var in enumerate(var_tuple):
+            if var not in df.columns:
+                print(f"Warning: Variable '{var}' not found in DataFrame, skipping.")
+                continue
+            
+            # Get color for this variable
+            color = colormap(j % colormap.N)
+            
+            # Group by hour of day
+            hourly_data = df.groupby('hod')[var].agg(['mean', 'std']).reset_index()
+            
+            # Apply normalization if requested
+            if normalize == 'daily':
+                # Normalize by daily mean
+                daily_mean = df[var].mean()
+                hourly_data['mean'] = hourly_data['mean'] / daily_mean
+                hourly_data['std'] = hourly_data['std'] / daily_mean
+                ylabel = 'Normalized Value (Daily Mean = 1)'
+            elif normalize == 'zscore':
+                # Z-score normalization
+                var_mean = df[var].mean()
+                var_std = df[var].std()
+                hourly_data['mean'] = (hourly_data['mean'] - var_mean) / var_std
+                hourly_data['std'] = hourly_data['std'] / var_std
+                ylabel = 'Standardized Value (Z-Score)'
+            else:
+                # No normalization
+                ylabel = 'Value'
+            
+            # Plot mean line
+            ax.plot(hourly_data['hod'], hourly_data['mean'],
+                    label=var, color=color, linewidth=2)
+            
+            # Plot standard deviation band
+            ax.fill_between(hourly_data['hod'],
+                            hourly_data['mean'] - hourly_data['std'],
+                            hourly_data['mean'] + hourly_data['std'],
+                            color=color, alpha=0.2)
+        
+        # Set labels and title for subplot
+        ax.set_xlabel('Hour of Day')
+        ax.set_ylabel(ylabel)
+        
+        # Create subplot title from variable names
+        subplot_title = "Diurnal Cycle of " + ", ".join(var_tuple)
+        ax.set_title(subplot_title)
+        
+        # Styling
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.set_xlim(0, 23)
+        ax.set_xticks(np.arange(0, 24, 3))
+        ax.legend(loc='best', fontsize='small')
+    
+    # Hide unused subplots
+    for j in range(len(vars), len(axes)):
+        axes[j].set_visible(False)
+    
+    # Set overall title if provided
+    if title:
+        fig.suptitle(title, fontsize=16)
+        plt.subplots_adjust(top=0.92)  # Make room for title
+    
+    plt.tight_layout()
+    
+    # Save figure if filename is provided
+    if filename:
+        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
+    
+    plt.show()
+    return fig
+
 def plot_vod_fingerprint(df, variable, title=None, figsize=(4, 7), cmap="viridis", scaling=99, hue_limit=None):
     """
     Create a fingerprint plot showing VOD data as a heatmap with hour of day (x-axis)
@@ -332,178 +490,6 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
         
         plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
         plt.show()
-
-def plot_vod_diurnal(df, show_std=False, figsize=(8, 6), title=None, filename="vod_diurnal_plot.png",
-                     algos=None, compare_anomalies=True, diff=False):
-    """
-    Create a 2x2 matrix of diurnal plots for VOD variables with algorithm suffixes.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        VOD time series data with algorithm suffixes (e.g., VOD1_tp, VOD1_tps)
-    show_std : bool, default=True
-        Whether to show ±1 standard deviation ribbon
-    figsize : tuple, default=(12, 8)
-        Figure size in inches
-    title : str, optional
-        Overall plot title
-    filename : str, default="vod_diurnal_plot.png"
-        Name to use when saving the plot
-    algos : list, optional
-        List of algorithm suffixes to include (e.g., ['tp', 'tps'])
-        If None, will try to detect from columns
-    compare_anomalies : bool, default=True
-        Whether to add orange lines comparing anomalies between algorithms
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        The created figure object
-    """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
-    # If no algorithms specified, try to detect them from the column names
-    if algos is None:
-        # Extract algorithm suffixes from column names (e.g., VOD1_tp, VOD1_tps)
-        all_cols = df.columns
-        algos = set()
-        for col in all_cols:
-            if col.startswith('VOD') and '_' in col:
-                parts = col.split('_')
-                if len(parts) >= 2 and parts[0] in ['VOD1', 'VOD2']:
-                    # For columns like VOD1_tp, VOD1_anom_tp
-                    if parts[-1] not in ['anom', 'std']:
-                        algos.add(parts[-1])
-                    elif len(parts) >= 3:
-                        algos.add(parts[-1])
-        
-        algos = sorted(list(algos))
-        if not algos:
-            raise ValueError("Could not detect algorithm suffixes in column names")
-        print(f"Detected algorithms: {', '.join(algos)}")
-    
-    # Create figure and subplots with shared x-axis
-    fig, axs = plt.subplots(2, 2, figsize=figsize, sharex=True)
-    
-    # Define the base variables for each subplot
-    subplot_vars = [
-        ('VOD1', axs[0, 0]),
-        ('VOD1_anom', axs[0, 1]),
-        ('VOD2', axs[1, 0]),
-        ('VOD2_anom', axs[1, 1])
-    ]
-    
-    # Calculate hour-of-day aggregated values
-    grouped = df.groupby('hod')
-    
-    # Set of colors for different algorithms (excluding orange which is reserved for comparison)
-    algo_colors = plt.cm.Set2.colors
-    
-    # get common y-axis limits for each row
-    y_limits = {}
-    
-    # Plot each variable for each algorithm
-    for i, (base_var, ax) in enumerate(subplot_vars):
-        for j, algo in enumerate(algos):
-            # Construct column name with algorithm suffix
-            var_name = f"{base_var}_{algo}"
-            
-            # Skip if column doesn't exist
-            if var_name not in df.columns:
-                continue
-            
-            # Calculate mean by hour of day
-            var_mean = grouped[var_name].mean()
-            
-            if not show_std:
-                # Initialize y_limits for this variable if not already done
-                if base_var not in y_limits:
-                    y_limits[base_var] = (var_mean.min(), var_mean.max())
-                else:
-                    # Update y_limits with current variable's min/max
-                    y_limits[base_var] = (
-                        min(y_limits[base_var][0], var_mean.min()),
-                        max(y_limits[base_var][1], var_mean.max())
-                    )
-            
-            # Plot the mean line
-            color = algo_colors[j % len(algo_colors)]
-            ax.plot(var_mean.index, var_mean.values, '-',
-                    linewidth=2, label=f"{var_name}",
-                    color=color)
-            
-            # Add std ribbon if requested and available
-            std_col = f"{var_name}_std"
-            if show_std and std_col in df.columns:
-                var_std = grouped[std_col].mean()
-                ax.fill_between(
-                    var_mean.index,
-                    var_mean.values - var_std.values,
-                    var_mean.values + var_std.values,
-                    alpha=0.2,
-                    color=color
-                )
-                y_limits.append((var_mean.values - var_std.values).min(),
-                                (var_mean.values + var_std.values).max())
-        
-        # Add comparison lines for anomalies if requested
-        if compare_anomalies and '_anom' in base_var and len(algos) >= 2:
-            # Default comparison is between first two algorithms
-            algo1, algo2 = algos[0], algos[1]
-            var1 = f"{base_var}_{algo1}"
-            var2 = f"{base_var}_{algo2}"
-            
-            if diff:
-                if var1 in df.columns and var2 in df.columns:
-                    diff = grouped[var1].mean() - grouped[var2].mean()
-                    ax.plot(diff.index, diff.values, '-',
-                            linewidth=2,
-                            color='orange',
-                            label=f"{algo1} - {algo2}")
-            
-        # Set labels and grid
-        ax.set_title(base_var)
-        ax.set_xlabel("Hour of Day")
-        ax.set_xticks(np.arange(0, 24, 3))
-        ax.grid(True, linestyle='--', alpha=0.7)
-        ax.legend(fontsize='small')
-        
-    # Set y-axis limits for each row
-    if not show_std:
-        # Set y-axis limits for each row
-        for i, (base_var, ax) in enumerate(subplot_vars):
-            # Determine the row (0 for VOD1 and VOD1_anom, 1 for VOD2 and VOD2_anom)
-            row = i // 2
-            if row == 0:
-                # Row 0: VOD1 and VOD1_anom
-                y_min = min(y_limits.get('VOD1', (0, 0))[0], y_limits.get('VOD1_anom', (0, 0))[0])
-                y_max = max(y_limits.get('VOD1', (0, 0))[1], y_limits.get('VOD1_anom', (0, 0))[1])
-            else:
-                # Row 1: VOD2 and VOD2_anom
-                y_min = min(y_limits.get('VOD2', (0, 0))[0], y_limits.get('VOD2_anom', (0, 0))[0])
-                y_max = max(y_limits.get('VOD2', (0, 0))[1], y_limits.get('VOD2_anom', (0, 0))[1])
-            
-            # Apply the y-axis limits
-            ax.set_ylim(y_min, y_max)
-        
-    # Set common y-axis labels
-    axs[0, 0].set_ylabel("GNSS-VOD")
-    axs[1, 0].set_ylabel("GNSS-VOD")
-    
-    # Set overall title if provided
-    if title:
-        fig.suptitle(title, fontsize=16)
-    
-    plt.tight_layout()
-    
-    # Save figure to FIG directory
-    plt.savefig(FIG / filename, dpi=300)
-    plt.show()
-    
-    return fig
-
 
 def plot_vod_scatter(df, x_var=None, y_var=None, polarization='compare', algo='tps',
                      hue='hour', point_size=2, add_linear_fit=False,

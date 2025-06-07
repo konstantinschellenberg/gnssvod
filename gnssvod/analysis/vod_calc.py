@@ -24,16 +24,17 @@ from processing.filepattern_finder import filter_files_by_date
 #--------------------------------------------------------------------------
 
 
-def calc_vod(parquet, pairings, bands, recover_snr=False, n_workers=15, chunk_size='100MB'):
+def calc_vod(df, pairings, bands, recover_snr=False, n_workers=15):
     """
     Calculate VOD using parallel processing with better handling of non-monotonic SV dimension.
     """
     import dask.dataframe as dd
     
     try:
-        data = dd.read_parquet(parquet, engine='pyarrow', chunksize=chunk_size)
+        # read df as a Dask DataFrame
+        data = dd.from_pandas(df, npartitions=n_workers, sort=True)
     except Exception as e:
-        warnings.warn(f"Failed to read parquet file {parquet}: {e}")
+        warnings.warn(f"Failed to transform input dataframe: {e}")
         return None
     
     if len(pairings) > 1:

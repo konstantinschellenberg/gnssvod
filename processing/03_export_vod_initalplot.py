@@ -72,7 +72,7 @@ if __name__ == "__main__":
                 algo="tps",
                 save_dir=FIG,
                 figsize=(7, 4),
-                y_limits={'VOD1': (0.0, 1.2)},
+                y_limits={'VOD1': (-1, 1)},
                 time_zone=visualization_timezone,
             )
             

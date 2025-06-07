@@ -64,13 +64,14 @@ iterate_parameters = False  # set to True to iterate over parameters
 plot = True  # I think this option is dead
 overwrite_vod_processing = False  # overwrite existing VOD processing files
 overwrite_anomaly_processing = True  # overwrite existing anomaly processing files
+add_sbas_position_manually = True  # add SBAS position to VOD files
 
 # todo: settings on constellation
 
 # parameters
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-single_file_interval = ('2024-04-01', "2024-04-10")
+single_file_interval = ('2023-04-15', "2023-07-30")
 visualization_timezone = "etc/GMT+6"
 
 # for ke calculation:
@@ -78,9 +79,9 @@ canopy_height = 20.0  # meters
 z0 = 1.0  # height of the ground receiver
 
 # for VOD calculation
-angular_resolution = [2]  # degrees
-temporal_resolution = [60]  # minutes  # change from 30
-angular_cutoff = [10] # changed from 30
+angular_resolution = [1]  # degrees
+temporal_resolution = [10]  # minutes  # change from 30
+angular_cutoff = [30] # changed from 30
 # agg_func = "mean"  # or "median"
 
 gnss_parameters = {
@@ -118,14 +119,14 @@ Use this time interface for time series selection
 """
 
 # subset must be in tz
-time_subset = ('2022-01-01', "2024-12-30")  # ("2024-01-01", "2024-12-30")
+time_subset = ('2023-05-15', "2024-12-30")  # ("2024-01-01", "2024-12-30")
 
 load_mode = 'single_file'  # 'multi_year' or single_file or supply_path
 
 # single file
 single_file_settings = {
     'station': 'MOz',
-    'time_interval':  ('2024-04-01', "2024-10-30"),
+    'time_interval':  single_file_interval,
     # 'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
 }
 
