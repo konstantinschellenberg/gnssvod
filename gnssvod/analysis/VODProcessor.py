@@ -1,18 +1,41 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from concurrent.futures import ProcessPoolExecutor
+from datetime import time
 from pathlib import Path
 
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 from dask.distributed import Client
+from tqdm import tqdm
+import os
+import xarray as xr
 
 from definitions import DATA
 import gnssvod as gv
-from processing.filepattern_finder import create_time_filter_patterns
+from gnssvod.io.preprocess import get_filelist
+from processing.filepattern_finder import create_time_filter_patterns, filter_files_by_date
 from processing.settings import bands, station
 from gnssvod.analysis.calculate_anomalies import calculate_anomaly
+
+
+# Process files individually and concatenate the DataFrames
+def process_file(file_path):
+    try:
+        # Verify file exists and has nonzero size
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            print(f"File {file_path} doesn't exist or is empty")
+            return pd.DataFrame()
+        
+        # Open single file
+        ds = xr.open_dataset(file_path)
+        df = ds.to_dataframe()
+        ds.close()  # Explicitly close dataset
+        return df.reset_index().sort_values(by=['Station', 'Epoch', 'SV']).set_index(['Epoch'])
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return pd.DataFrame()
 
 class VODProcessor:
     def __init__(self, station=station, bands=bands, time_interval=None,
@@ -74,9 +97,64 @@ class VODProcessor:
             if not isinstance(date, str) or not pd.to_datetime(date, errors='coerce'):
                 raise ValueError("Both start_date and end_date must be valid date strings in 'YYYY-MM-DD' format.")
         
-    def _concat_nc_files(self, files):
-        pass
-    
+        
+    def _concat_nc_files(self, filepattern, interval, n_workers=15):
+        from dask.distributed import Client, LocalCluster
+        import concurrent.futures
+        import os.path
+        
+        # Set up a local Dask cluster with multiple workers
+        cluster = LocalCluster(n_workers=n_workers, threads_per_worker=1)
+        client = Client(cluster)
+        print(f"Dask dashboard available at: {client.dashboard_link}")
+        
+        if interval:
+            files_ = get_filelist({'': filepattern})
+            files = {'': filter_files_by_date(files_[""], interval)}
+        else:
+            files = get_filelist({'': filepattern})
+        
+        print("Number of files found: ", len(files['']))
+        print("Average filesize: ", np.mean([os.path.getsize(x) / 1e6 for x in files['']]).round(2), "MB")
+        print("Total size: ", np.sum([os.path.getsize(x) / 1e6 for x in files['']]).round(2), "MB")
+        
+        from datetime import datetime
+        start = datetime.now()
+        
+        # Process files in parallel using ThreadPoolExecutor
+        print("Processing files individually in parallel...")
+        valid_dfs = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(process_file, file): file for file in files['']}
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(files['']), desc="Reading files"):
+                file = futures[future]
+                try:
+                    df = future.result()
+                    if not df.empty:
+                        valid_dfs.append(df)
+                except Exception as e:
+                    print(f"Exception processing {file}: {e}")
+        
+        # Check if we have any valid dataframes
+        if not valid_dfs:
+            raise ValueError("No valid data could be read from any of the input files")
+        
+        # Concatenate all valid dataframes
+        data = pd.concat(valid_dfs, axis=0)
+        
+        # Clean up memory
+        del valid_dfs
+        
+        end = datetime.now()
+        print("Time to read all files: ", (end - start) / 60, "minutes")
+        print(f"Successfully processed {len(data)} rows from {len(files[''])} files")
+        
+        # close the Dask client
+        client.close()
+        
+        return data
+
+
     def process_vod(self, local_file=False, overwrite=False, **kwargs):
         """
         Process VOD data and save to disk in temp folder to avoid memory overflow.
@@ -111,51 +189,63 @@ class VODProcessor:
         band_abbr = f"bd{len(self.bands)}"  # Number of bands
         snr_abbr = f"rs{int(self.recover_snr)}"  # SNR recovery (1=True, 0=False)
         # Create filename with parameter abbreviations
-        self.vod_filename = f"vod_{self.station}_{start_date}_{end_date}_{band_abbr}_{snr_abbr}.pkl"
+        self.vod_filename = f"vod_{self.station}_{start_date}_{end_date}_{band_abbr}_{snr_abbr}"
         
         # Create temp directory if it doesn't exist
         temp_dir = DATA / 'temp'
         temp_dir.mkdir(exist_ok=True, parents=True)
         
-        vod_file_path = temp_dir / self.vod_filename
-        
-        # Check if file already exists and overwrite flag
-        if vod_file_path.exists() and not overwrite:
-            print(f"VOD data file already exists at {vod_file_path}. Loading from disk.")
-            # Don't load into memory yet, just confirm it exists
-            if local_file:
-                return pd.read_pickle(vod_file_path)
-            return None
-        
+        vod_file_concatted = temp_dir / (self.vod_filename + "_concat" + ".parquet")
+        vod_file_calculated = temp_dir / (self.vod_filename + "_calc" + ".parquet")
+
         # -----------------------------------
         # concat all files
         
-        self._concat_nc_files()
-        
-        # Calculate VOD
-        vod = gv.calc_vod(
-            self.pattern,
-            self.pairings,
-            self.bands,
-            self.time_interval,
-            recover_snr=self.recover_snr
-        )[self.station]
-        
-        # print("NaN values in VOD:")
-        # print(vod.isna().mean() * 100)
-        
-        # Save to disk
-        if not vod.empty:
-            vod.to_pickle(vod_file_path)
-            
-            print(f"Saved VOD data to {vod_file_path}")
-            if local_file:
-                return vod
+        if vod_file_concatted.exists() and not overwrite:
+            print(f"VOD data file already exists at {vod_file_concatted}. Loading from disk.")
+            # Don't load into memory yet, just confirm it exists
         else:
-            print("No VOD data found for the specified time interval.")
+            print(f"Combining VOD data files matching pattern: {self.pattern}")
+            # Combine all NetCDF files matching the pattern
+            
+            # This will return a Dask DataFrame
+            combind_ncs = self._concat_nc_files(
+                filepattern=self.pattern,
+                interval=self.time_interval,
+                n_workers=15,  # Adjust as needed
+            )
+            
+            # save combined data (dask) to parquet file
+            if not combind_ncs.empty:
+                combind_ncs.to_parquet(vod_file_concatted, engine='pyarrow')
+                print(f"Saved combined VOD data to {vod_file_concatted}")
+            
+        # -----------------------------------
+        # Calculate VOD
+        
+        # Check if file already exists and overwrite flag
+        if vod_file_calculated.exists() and not overwrite:
+            print(f"VOD data file already exists at {vod_file_calculated}. Loading from disk.")
             return None
         
+        print(f"Calculating VOD for {self.station} using file {vod_file_concatted}")
+        vod = gv.calc_vod(
+            vod_file_concatted,
+            self.pairings,
+            self.bands,
+            recover_snr=self.recover_snr
+        )
+        
+        # Save to disk
+        try:
+            # todo: finished here"!!!
+            # compute vod while saving as parquet
+            vod.compute(optimize_graph=True).to_parquet(vod_file_calculated, engine='pyarrow')
+        except Exception as e:
+            print(f"Error saving VOD data to {vod_file_calculated}: {e}")
+            return None
         return None
+    
     
     def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, max_workers=15, overwrite=False,
                         **kwargs):
