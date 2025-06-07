@@ -557,8 +557,13 @@ class VODProcessor:
         # Convert xarray dataset to dataframe for easier manipulation
         df = self.results.to_dataframe().reset_index()
         
-        # Filter to only include algo='tps'
-        df_tps = df[df['algo'] == algo]
+        # Filter columns that contain the algo value in their name
+        algo_cols = [col for col in df.columns if algo in col]
+        df_tps = df[algo_cols]
+        # strip suffix from column names
+        df_tps.columns = [col.replace(f"_{algo}", "") for col in df_tps.columns]
+        # merge back to df
+        df_tps = df.merge(df_tps, left_index=True, right_index=True)
         
         if df_tps.empty:
             print(f"No results with algo='{algo} found.")

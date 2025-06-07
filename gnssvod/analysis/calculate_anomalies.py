@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+from gnssvod import hemibuild
 from processing.export_vod_funs import plot_hemi
 
 
@@ -103,8 +104,8 @@ def create_aggregation_dict(vod_with_cells, band_ids):
     return agg_dict
 
 
-def calculate_binned_sky_coverage(df, vod_with_cells, vod_avg, band_ids, temporal_resolution, num_bins=5,
-                                  plot_bins=False):
+def calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_resolution, num_bins=5,
+                                  plot_bins=False, suffix=None):
     """
     Calculate Ci(t): Binned percentage of sky plots covered per time period, based on VOD percentiles.
 
@@ -130,6 +131,7 @@ def calculate_binned_sky_coverage(df, vod_with_cells, vod_avg, band_ids, tempora
     pandas.DataFrame
         Time series DataFrame with added bin coverage columns
     """
+    final = pd.DataFrame()
     for band in band_ids:
         # Get the mean VOD values for this band
         band_means = vod_avg[f"{band}_mean"]
@@ -197,13 +199,76 @@ def calculate_binned_sky_coverage(df, vod_with_cells, vod_avg, band_ids, tempora
                 bin_coverage[f"Ci_t_{band}_bin{bin_idx}_pct"] = (
                         bin_counts[bin_idx] / total_current_coverage.replace(0, np.nan) * 100
                 )
+        final.loc[:, f"Ci_t_{band}_bin*_pct"] = bin_coverage
         
-        # Join the results to the dataframe
-        df = df.join(bin_coverage)
+    return final
     
-    return df
 
+def calculate_sv_specific_anomalies(vod_with_cells, band_ids, temporal_resolution):
+    """
+    Calculate satellite vehicle specific VOD anomalies (Method 2: Konstantin's extension).
 
+    Parameters
+    ----------
+    vod_with_cells : pandas.DataFrame
+        VOD data with cell IDs
+    band_ids : list
+        List of band identifiers to calculate anomalies for
+    temporal_resolution : int
+        Temporal resolution in minutes
+
+    Returns
+    -------
+    pandas.DataFrame
+        Time series of VOD anomalies calculated using the SV-specific method
+    """
+    vod_ts_all = []
+    
+    # Process each satellite vehicle separately
+    for sv in vod_with_cells.index.get_level_values('SV').unique():
+        # Extract data for this SV only
+        vod_sv = vod_with_cells.xs(sv, level='SV')
+        
+        # todo: revisit this condition
+        # Skip if there's not enough data for this SV
+        # if len(vod_sv) < 100:
+        #     print(f"Skipping SV {sv} due to insufficient data.")
+        #     continue
+        
+        # Calculate average values per grid cell for this specific SV
+        vod_avg_sv = vod_sv.groupby(['CellID']).agg(['mean', 'std', 'count'])
+        vod_avg_sv.columns = ["_".join(x) for x in vod_avg_sv.columns.to_flat_index()]
+        
+        # Join the cell averages back to the original data
+        vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID')
+        
+        # Calculate anomalies for each band
+        for band in band_ids:
+            vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"]
+        
+        # Add SV as a column before appending
+        vod_anom_sv['SV'] = sv
+        vod_anom_sv = vod_anom_sv.reset_index()
+        vod_ts_all.append(vod_anom_sv)
+    
+    # Combine all SV results
+    if vod_ts_all:
+        vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
+        
+        # Temporal aggregation
+        vod_ts_2 = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
+        
+        # Add back the mean
+        for band in band_ids:
+            """
+            Remove adding mean VOD here, as it is not needed in the final output. See method 1
+            """
+            vod_ts_2[f"{band}_anom_tps"] = vod_ts_2[f"{band}_anom"]
+    else:
+        vod_ts_2 = pd.DataFrame()
+    
+    # only return _anom_tps cols
+    return vod_ts_2[[f"{band}_anom_tps" for band in band_ids]]
 
 def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     """
@@ -247,8 +312,10 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
             Average VOD values per grid cell
     """
     global vod_ts_1
-
-    # -----------------------------------
+    from dask.distributed import Client
+    Client()  # Initialize Dask client for parallel processing if needed
+    1
+    # -------------------from dask.distributed import Client----------------
     # make ke per band and add to the band_ids if make_ke is True
     make_ke = kwargs.get('make_ke', False)  # whether to calculate extinction coefficient
     if not isinstance(band_ids, list):
@@ -265,7 +332,6 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
         )
 
     # -----------------------------------
-    # Method 1: Vincent's method (phi_theta) - short tp
     # Get average value per grid cell
     agg_dict = create_aggregation_dict(vod_with_cells, band_ids)
     
@@ -284,11 +350,11 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     # only Cell-id important
     vod_with_cells = vod_with_cells.drop(columns=['Azimuth', 'Elevation'], errors='ignore')
     # -----------------------------------
-    
+    # Method 1: Vincent's method (phi_theta) - short tp
     # Calculate anomaly
     vod_anom = vod_with_cells.join(vod_avg, on='CellID')
     for band in band_ids:
-        vod_anom[f"{band}_anom"] = vod_anom[band] - vod_anom[f"{band}_mean"]
+        vod_anom[f"{band}_anom_tp"] = vod_anom[band] - vod_anom[f"{band}_mean"]
     
     """
     MAJOR CHANGE: ADD MEAN VOD IN A LATER SCIPRT:
@@ -301,54 +367,11 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     """
     # Temporal aggregation
     vod_ts_1 = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
-    for band in band_ids:
-        vod_ts_1[f"{band}_anom"] = vod_ts_1[f"{band}_anom"]
-
-    
     # -----------------------------------
     # Method 2: Konstantin's extension (phi_theta_sv) - short tps
-    vod_ts_all = []
+    vod_ts_2 = calculate_sv_specific_anomalies(vod_with_cells, band_ids, temporal_resolution)
     
-    # Process each satellite vehicle separately
-    for sv in vod_with_cells.index.get_level_values('SV').unique():
-        # Extract data for this SV only
-        vod_sv = vod_with_cells.xs(sv, level='SV')
-        
-        # todo: revisit this condition
-        # Skip if there's not enough data for this SV
-        # if len(vod_sv) < 100:
-        #     print(f"Skipping SV {sv} due to insufficient data.")
-        #     continue
-        
-        # Calculate average values per grid cell for this specific SV
-        vod_avg_sv = vod_sv.groupby(['CellID']).agg(['mean', 'std', 'count'])
-        vod_avg_sv.columns = ["_".join(x) for x in vod_avg_sv.columns.to_flat_index()]
-        
-        # Join the cell averages back to the original data
-        vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID')
-        
-        # Calculate anomalies for each band
-        for band in band_ids:
-            vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"]
-        
-        # Add SV as a column before appending
-        vod_anom_sv['SV'] = sv
-        vod_anom_sv = vod_anom_sv.reset_index()
-        vod_ts_all.append(vod_anom_sv)
-    
-    # Combine all SV results
-    if vod_ts_all:
-        vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
-        
-        # Temporal aggregation
-        vod_ts_2 = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg('mean')
-        
-        # Add back the mean
-        for band in band_ids:
-            vod_ts_2[f"{band}_anom"] = vod_ts_2[f"{band}_anom"] + vod_ts_2[f"{band}"].mean()
-    else:
-        vod_ts_2 = pd.DataFrame()
-        
+  
     # -----------------------------------
     # NEW FEATURES
     # Calculate Ns(t): Average number of satellites per resampled epoch
@@ -372,27 +395,49 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
     # #######
     # Calculate Ci(t): Binned percentage (by VOD percentiles) of sky plots covered per time period
     num_bins = kwargs.get('vod_percentile_bins', 5)
-    vod_ts_1 = calculate_binned_sky_coverage(vod_ts_1, vod_with_cells, vod_avg, band_ids, temporal_resolution,
-                                             num_bins=num_bins, plot_bins=False)
+    # vod_ts_1 = calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_resolution,
+    #                                             num_bins=num_bins, plot_bins=False, suffix="tp")
+    # vod_ts_2 = calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_resolution,
+    #                                          num_bins=num_bins, plot_bins=False, suffix="tps")
+    #
+    
+    # -----------------------------------
+    # extract SBAS
+    
+    # print sv indices
+    svs = vod_with_cells.index.get_level_values('SV').unique().to_list()
+    svs.sort()
+    print(f"SVs in the dataset: {svs}")
+    
+    # find the CellIDs with most observations
+    # Find the 10 most observed CellIDs and the most frequent SV at each location
+    vod_with_cells.reset_index(inplace=True)  # reset index to access CellID easily
+    cell_observation_counts = vod_with_cells.groupby('CellID').size().sort_values(ascending=False)
+    hemi = hemibuild(2, 10)
+    plot_hemi(vod_avg, hemi.patches(), var="VOD1_count", clim="auto", title="CellID Observation Counts",)
+    
+    top_10_cells = cell_observation_counts.head(10)
+    print("\nTop 10 most observed CellIDs:")
+    print(top_10_cells)
+    
+    print("\nMost frequent SV at each top CellID:")
+    for cell_id in top_10_cells.index:
+        # Filter data for this cell
+        cell_data = vod_with_cells[vod_with_cells['CellID'] == cell_id]
+        # Count SV occurrences
+        sv_counts = cell_data.index.get_level_values('SV').value_counts()
+        most_frequent_sv = sv_counts.idxmax()
+        print(f"CellID {cell_id}: SV {most_frequent_sv} (observed {sv_counts.max()} times)")
+    
     
     # -----------------------------------
     # join new features to the aggregated time series
-    vod_ts_1 = vod_ts_1.join(ns_t)
-    vod_ts_1 = vod_ts_1.join(sd_ns_t)
-    vod_ts_1 = vod_ts_1.join(cell_coverage)
+    ds3 = pd.DataFrame({
+        'Ns_t': ns_t,
+        'SD_Ns_t': sd_ns_t,
+        'C_t_perc': cell_coverage
+    })
     
-    # -----------------------------------
-    # Prepare the final results
-    # Combine both methods
-    if not vod_ts_1.empty:
-        vod_ts_1['algo'] = 'tp'  # Vincent's method
-    if not vod_ts_2.empty:
-        vod_ts_2['algo'] = 'tps'  # Konstantin's extension
-    
-    # Concatenate results
-    vod_ts_combined = pd.concat([vod_ts_1, vod_ts_2], axis=0)
-    
-    # Drop CellID if present
-    vod_ts_combined = vod_ts_combined.drop(columns=['CellID'], errors='ignore')
-    
-    return (vod_ts_combined, vod_avg)
+    vod_ds_combined = vod_ts_1.join(vod_ts_2).join(ds3)
+
+    return (vod_ds_combined, vod_avg)
