@@ -19,6 +19,7 @@ plotly = "^6.1.0"
 cmocean = "^4.0.3"
 pywavelets = "^1.8.0"
 dask = "^2025.5.1"
+statsmodels = "^0.14.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"

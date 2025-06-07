@@ -3,20 +3,9 @@ calc_vod calculates VOD according to specified pairing rules
 """
 # ===========================================================
 # ========================= imports =========================
-import os
-import time
-import glob
-import datetime
+
 import numpy as np
-import pandas as pd
-import xarray as xr
 import warnings
-from gnssvod.io.preprocess import get_filelist
-import pdb
-from tqdm import tqdm
-
-from processing.filepattern_finder import filter_files_by_date
-
 
 #--------------------------------------------------------------------------
 #--------------------------------------------------------------------------

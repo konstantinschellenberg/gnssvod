@@ -136,7 +136,7 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
         
         # Set labels and title for subplot
         ax.set_xlabel('Hour of Day')
-        ax.set_ylabel(ylabel)
+        # ax.set_ylabel(ylabel)
         
         # Create subplot title from variable names
         subplot_title = "Diurnal Cycle of " + ", ".join(var_tuple)
@@ -166,119 +166,270 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     plt.show()
     return fig
 
-def plot_vod_fingerprint(df, variable, title=None, figsize=(4, 7), cmap="viridis", scaling=99, hue_limit=None):
+def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", scaling=99, hue_limit=None, **kwargs):
     """
-    Create a fingerprint plot showing VOD data as a heatmap with hour of day (x-axis)
+    Create fingerprint plots showing VOD data as heatmaps with time of day (x-axis)
     and day of year (y-axis).
 
     Parameters
     ----------
     df : pandas.DataFrame
-        VOD time series data from read_vod_timeseries
-    variable : str
-        Variable name to plot as the heatmap color
-    interactive : bool or str, default=False
-        If "interactive", use Plotly for interactive plotting
-        Otherwise use Matplotlib
+        VOD time series data with datetime index
+    vars : str, list of str, list of tuples, or list of lists of tuples
+        Variable(s) to plot:
+        - str: Single variable
+        - list of str: Multiple variables in separate plots
+        - list of tuples: Variables grouped in rows (tuple members in same row)
+        - list of lists of tuples: Complex grouping (list members in new rows)
+    figsize : tuple, optional
+        Figure size (width, height) in inches. Auto-calculated if None.
     title : str, optional
         Plot title
-    figsize : tuple, default=(4, 7)
-        Figure size in inches (for non-interactive plots)
     cmap : str, default="viridis"
         Colormap to use for the heatmap
     scaling : int, default=99
-        Percentile (1-100) to cap color scale. Values below (100-scaling)/2 percentile
-        and above (100+scaling)/2 percentile will be capped.
+        Percentile (1-100) to cap color scale.
+    hue_limit : tuple, optional
+        Manual (min, max) color scale limits. Overrides scaling.
 
     Returns
     -------
-    fig : matplotlib.figure.Figure or plotly.graph_objects.Figure
-        The created figure object
+    fig : matplotlib.figure.Figure
+        The created figure
     """
-    if 'hod' not in df.columns or 'doy' not in df.columns:
-        raise ValueError("DataFrame must contain 'hod' and 'doy' columns")
-
-    if variable not in df.columns:
-        raise ValueError(f"Variable '{variable}' not found in DataFrame")
-
-    # Create a pivot table for the heatmap
-    pivot_data = df.pivot_table(
-        values=variable,
-        index=['year', 'doy'],
-        columns='hod',
-        aggfunc='mean'
-    )
-    
-    # print perc nan per day
-    plot_nan_bars = False
-    if plot_nan_bars:
-        doynan = df.groupby(['doy']).apply(lambda x: x[variable].isna().sum() / len(x) * 100, include_groups=False)
-        from matplotlib import pyplot as plt
-        doynan.plot(kind="bar", title="nan per doy", figsize=(8, 4)); plt.show()
-    
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=figsize)
+    import numpy as np
+    import pandas as pd
+    import matplotlib.dates as mdates
+    from matplotlib.ticker import FuncFormatter
 
-    # Calculate percentile bounds for color scaling
-    if hue_limit:
-        vmin = hue_limit[0]
-        vmax = hue_limit[1]
-    else:
-        if scaling < 100:
-            lower_percentile = (100 - scaling)
-            upper_percentile = 100 - lower_percentile
-            vmin = np.nanpercentile(pivot_data.values, lower_percentile)
-            vmax = np.nanpercentile(pivot_data.values, upper_percentile)
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+
+    # Extract time of day as decimal hours (preserving native resolution)
+    if isinstance(df.index, pd.DatetimeIndex):
+        # Calculate time of day as a decimal (hour + minute/60 + second/3600)
+        df['tod'] = df.index.hour + df.index.minute/60 + df.index.second/3600
+        df['doy'] = df.index.dayofyear
+        df['year'] = df.index.year
+    elif 'datetime' in df.columns and pd.api.types.is_datetime64_any_dtype(df['datetime']):
+        df['tod'] = df['datetime'].dt.hour + df['datetime'].dt.minute/60 + df['datetime'].dt.second/3600
+        df['doy'] = df['datetime'].dt.dayofyear
+        df['year'] = df['datetime'].dt.year
+    elif 'hod' in df.columns and 'doy' in df.columns and 'year' in df.columns:
+        # Convert hour of day to time of day if minutes/seconds not available
+        if 'minute' in df.columns:
+            df['tod'] = df['hod'] + df['minute']/60
+            if 'second' in df.columns:
+                df['tod'] += df['second']/3600
         else:
-            vmin = None
-            vmax = None
-            
-    # nan –> 0
-    pivot_data = pivot_data.fillna(0)
-    
-    # make date the index, pd.DatetimeIndex
-    pivot_data.index = pd.to_datetime(pivot_data.index.get_level_values('year').astype(str) + '-' +
-                                        pivot_data.index.get_level_values('doy').astype(str),
-                                        format='%Y-%j')
+            df['tod'] = df['hod']
+    else:
+        raise ValueError("DataFrame must contain datetime index or columns for time calculation")
 
-    # Create the heatmap with vmin and vmax for color scaling
-    img = ax.pcolormesh(
-        pivot_data.columns,  # hours
-        pivot_data.index,    # days
-        pivot_data.values,
-        cmap=cmap,
-        shading='auto',  # 'nearest' or 'auto'
-        vmin=vmin,
-        vmax=vmax
-    )
+    # Normalize the variable structure to list of lists of tuples for unified processing
+    if isinstance(vars, str):
+        # Single variable
+        vars = [[(vars,)]]
+    elif isinstance(vars, list):
+        if all(isinstance(v, str) for v in vars):
+            # List of variables
+            vars = [[(v,)] for v in vars]
+        elif all(isinstance(v, tuple) for v in vars):
+            # List of tuples
+            vars = [vars]
+        elif all(isinstance(v, list) for v in vars):
+            # Already list of lists - validate that all items are tuples
+            for i, row in enumerate(vars):
+                if not all(isinstance(v, tuple) for v in row):
+                    vars[i] = [(v,) if isinstance(v, str) else v for v in row]
+        else:
+            # Mixed list - normalize to tuples
+            vars = [[(v,) if isinstance(v, str) else v for v in vars]]
 
-    # Flip the y-axis so doy increases downward
-    ax.invert_yaxis()
+    # Calculate rows and columns
+    n_rows = len(vars)
+    n_cols = max(len(row) for row in vars)
 
-    # Add colorbar
-    cbar = fig.colorbar(img, ax=ax)
-    cbar.set_label(variable)
+    # Auto-calculate figsize if not provided
+    if figsize is None:
+        figsize = (4 * n_cols, 8 * n_rows)
 
-    # Set labels and title
-    ax.set_xlabel("Hour of Day")
-    ax.set_ylabel("Day of Year")
-    ax.set_title(title if title else f"Fingerprint Plot of {variable}")
+    # Create figure and axes grid
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
 
-    # Set xticks to show hours
-    ax.set_xticks(np.arange(0, 24, 3))
-    ax.set_xticklabels(np.arange(0, 24, 3))
+    # Ensure axes is always a 2D array
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = np.array([axes])
+    elif n_cols == 1:
+        axes = np.array([[ax] for ax in axes])
 
-    # Set yticks to show days
-    # ax.set_yticks(np.arange(0, 366, 30))
-    # ax.set_yticklabels(np.arange(0, 366, 30))
+    # Flatten all variables to check for global color scaling
+    all_variables = []
+    for row in vars:
+        for var_tuple in row:
+            all_variables.extend(var_tuple)
 
-    filename = f"vod_fingerprint_{variable}.png"
+    # Determine global color scaling if multiple variables and no manual limits
+    use_global_scaling = len(all_variables) > 1 and hue_limit is None
+
+    if use_global_scaling:
+        # Calculate global min/max across all variables
+        all_values = []
+        for var in all_variables:
+            if var in df.columns:
+                all_values.extend(df[var].dropna().values)
+
+        if all_values:
+            lower_percentile = (100 - scaling) / 2
+            upper_percentile = 100 - lower_percentile
+            vmin = np.nanpercentile(all_values, lower_percentile)
+            vmax = np.nanpercentile(all_values, upper_percentile)
+            global_limits = (vmin, vmax)
+
+    # Determine the native temporal resolution of the dataset
+    if len(df['tod'].unique()) > 24:
+        # High-resolution data - check actual resolution
+        tod_diff = np.diff(np.sort(df['tod'].unique()))
+        min_diff = np.min(tod_diff[tod_diff > 0]) if len(tod_diff) > 0 else 1/60
+        resolution_minutes = min_diff * 60
+        high_res = True
+    else:
+        # Hourly or lower resolution
+        high_res = False
+
+    # Time formatter function for x-axis
+    def time_formatter(x, pos):
+        hours = int(x)
+        minutes = int((x - hours) * 60)
+        if high_res and minutes > 0:
+            return f"{hours:02d}:{minutes:02d}"
+        else:
+            return f"{hours:02d}:00"
+
+    # Process each variable
+    for i, row in enumerate(vars):
+        for j, var_tuple in enumerate(row):
+            if j >= n_cols:
+                continue  # Skip if beyond the number of columns
+
+            ax = axes[i, j]
+
+            # Skip empty positions
+            if not var_tuple:
+                ax.axis('off')
+                continue
+
+            # Create subplot title from variable names
+            subplot_title = ", ".join(var_tuple)
+
+            # Create a pivot table for each variable in the tuple
+            images = []
+            for k, variable in enumerate(var_tuple):
+                if variable not in df.columns:
+                    print(f"Warning: Variable '{variable}' not found in DataFrame, skipping.")
+                    continue
+
+                # Create pivot table using the native time resolution
+                pivot_data = df.pivot_table(
+                    values=variable,
+                    index=['year', 'doy'],
+                    columns='tod',
+                    aggfunc='mean'
+                )
+
+                # Fill NaNs with 0
+                pivot_data = pivot_data.fillna(0)
+
+                # Make date the index
+                pivot_data.index = pd.to_datetime(
+                    pivot_data.index.get_level_values('year').astype(str) + '-' +
+                    pivot_data.index.get_level_values('doy').astype(str),
+                    format='%Y-%j'
+                )
+
+                # Calculate color limits for this variable
+                if hue_limit:
+                    # Use manual limits
+                    vmin, vmax = hue_limit
+                elif use_global_scaling:
+                    # Use global limits
+                    vmin, vmax = global_limits
+                else:
+                    # Calculate limits for this variable
+                    if scaling < 100:
+                        lower_percentile = (100 - scaling) / 2
+                        upper_percentile = 100 - lower_percentile
+                        vmin = np.nanpercentile(pivot_data.values, lower_percentile)
+                        vmax = np.nanpercentile(pivot_data.values, upper_percentile)
+                    else:
+                        vmin, vmax = None, None
+
+                # Create the heatmap
+                img = ax.pcolormesh(
+                    pivot_data.columns,  # time of day (continuous)
+                    pivot_data.index,    # days
+                    pivot_data.values,
+                    cmap=cmap,
+                    shading='auto',
+                    vmin=vmin,
+                    vmax=vmax
+                )
+                images.append(img)
+
+            # Only add colorbar for the last image (if any images were created)
+            if images:
+                cbar = fig.colorbar(images[-1], ax=ax)
+                cbar.set_label(subplot_title)
+
+            # Flip the y-axis so dates increase downward
+            ax.invert_yaxis()
+
+            # Set labels
+            ax.set_xlabel("Time of Day")
+            ax.set_ylabel("Date")
+            ax.set_title(subplot_title)
+
+            # Set x-axis ticks and formatter based on resolution
+            if high_res:
+                # For high-resolution data, show more detailed time ticks
+                x_ticks = np.arange(0, 24.1, 3)  # Every 3 hours
+                ax.set_xticks(x_ticks)
+                ax.xaxis.set_major_formatter(FuncFormatter(time_formatter))
+            else:
+                # For hourly data, show simple hour marks
+                ax.set_xticks(np.arange(0, 24, 6))
+                ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 24, 6)])
+
+    # Hide unused subplots
+    for i in range(n_rows):
+        for j in range(len(vars[i]), n_cols):
+            axes[i, j].axis('off')
+
+    # Set overall title if provided
+    if title:
+        fig.suptitle(title, fontsize=16)
+        plt.subplots_adjust(top=0.92)  # Make room for title
+
+    # Create filename based on variables
+    if isinstance(vars, list) and len(vars) == 1 and isinstance(vars[0], list) and len(vars[0]) == 1:
+        # Single variable case
+        var_str = "_".join(vars[0][0])
+    else:
+        # Multiple variables case
+        var_str = "multiple_vars"
+
+    filename = f"vod_fingerprint_{var_str}.png"
     plt.tight_layout()
     plt.savefig(FIG / filename, dpi=300)
     plt.show()
 
+    return fig
 
-def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8, 5), **kwargs):
+
+def plot_vod_timeseries(df, variables, interactive=True, title=None, figsize=(8, 5), **kwargs):
     """
     Plot VOD time series data for specified variables with customizable styling.
 
@@ -341,7 +492,7 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
     filename = kwargs.get('filename', None)
     daily_average = kwargs.get('daily_average', False)
     
-    if interactive == "interactive":
+    if interactive :
         # Plotly version
         import plotly.graph_objects as go
         
