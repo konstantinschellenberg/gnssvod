@@ -6,6 +6,7 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
+from dask.distributed import Client
 
 from definitions import DATA
 import gnssvod as gv
@@ -73,6 +74,8 @@ class VODProcessor:
             if not isinstance(date, str) or not pd.to_datetime(date, errors='coerce'):
                 raise ValueError("Both start_date and end_date must be valid date strings in 'YYYY-MM-DD' format.")
         
+    def _concat_nc_files(self, files):
+        pass
     
     def process_vod(self, local_file=False, overwrite=False, **kwargs):
         """
@@ -124,6 +127,11 @@ class VODProcessor:
                 return pd.read_pickle(vod_file_path)
             return None
         
+        # -----------------------------------
+        # concat all files
+        
+        self._concat_nc_files()
+        
         # Calculate VOD
         vod = gv.calc_vod(
             self.pattern,
@@ -133,12 +141,13 @@ class VODProcessor:
             recover_snr=self.recover_snr
         )[self.station]
         
-        print("NaN values in VOD:")
-        print(vod.isna().mean() * 100)
+        # print("NaN values in VOD:")
+        # print(vod.isna().mean() * 100)
         
         # Save to disk
         if not vod.empty:
             vod.to_pickle(vod_file_path)
+            
             print(f"Saved VOD data to {vod_file_path}")
             if local_file:
                 return vod
@@ -225,26 +234,21 @@ class VODProcessor:
                         print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
                         result_paths.append(str(file_path))
                     else:
-                        # Add to list of combinations to process
-                        param_combinations_to_process.append({
+                        # Process this parameter combination immediately
+                        print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
+                        params = {
                             'angular_resolution': ar,
                             'angular_cutoff': ac,
                             'temporal_resolution': tr,
                             'vod_anomaly_filename': filename,
-                        })
-                        # update with kwargs
-                        param_combinations_to_process[-1].update(kwargs)
-        
-        # Process parameter combinations that need processing
-        if param_combinations_to_process:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(self._run_parameter_combination, params)
-                           for params in param_combinations_to_process]
-                
-                for future in futures:
-                    result = future.result()
-                    if result is not None:
-                        result_paths.append(result)
+                        }
+                        # Update with kwargs
+                        params.update(kwargs)
+                        
+                        # Process the parameter combination directly
+                        result = self._run_parameter_combination(params)
+                        if result is not None:
+                            result_paths.append(result)
         
         # Combine results into a single xarray dataset
         self.results = self._combine_results(result_paths)
@@ -434,16 +438,6 @@ class VODProcessor:
     def _run_parameter_combination(self, params):
         """
         Process a single parameter combination and save results to disk.
-
-        Parameters
-        ----------
-        params : dict
-            Dictionary of parameters including vod_filename
-
-        Returns
-        -------
-        str
-            Path to the saved temporary file
         """
         try:
             print(f"Processing combination: {params}")
@@ -461,15 +455,19 @@ class VODProcessor:
             
             # Classify VOD into grid cells
             vod_with_cells = hemi.add_CellID(vod.copy())
-
+            
+            # Calculate anomalies using memory-efficient approach
             anomaly_params = {
-                "vod_with_cells": vod_with_cells,
+                "vod_with_cells": vod_with_cells,  # Pass pandas DataFrame directly
                 "band_ids": self.band_ids,
+                "time_chunk_size": 500,  # Process 500 time steps at once
+                "sv_batch_size": 5,  # Process 5 satellites at once
+                "memory_limit": "4GB"  # Limit memory usage
             }
-            # update with params
+            # Update with params
             anomaly_params.update(params)
             
-            # Calculate anomalies
+            # Calculate anomalies (now accepts pandas DataFrame directly)
             vod_ts_combined, vod_avg = calculate_anomaly(**anomaly_params)
             
             # Add parameter columns
@@ -479,13 +477,14 @@ class VODProcessor:
             
             # Save to disk
             vod_ts_combined.to_pickle(anomaly_file_path)
-            
             print(f"Saved anomaly results to {anomaly_file_path}")
             
             return str(anomaly_file_path)
         
         except Exception as e:
             print(f"Error processing combination {params}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _combine_results(self, result_paths):

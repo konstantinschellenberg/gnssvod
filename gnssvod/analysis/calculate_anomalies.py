@@ -66,9 +66,6 @@ def calculate_extinction_coefficient(vod_with_cells, band_ids, canopy_height=Non
     
     return vod_with_cells, updated_band_ids
 
-global vod_ts_1
-
-
 def create_aggregation_dict(vod_with_cells, band_ids):
     """
     Create an aggregation dictionary for groupby operations based on column types.
@@ -202,7 +199,6 @@ def calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_re
         final.loc[:, f"Ci_t_{band}_bin*_pct"] = bin_coverage
         
     return final
-    
 
 def calculate_sv_specific_anomalies(vod_with_cells, band_ids, temporal_resolution):
     """
@@ -311,10 +307,6 @@ def calculate_anomaly(vod_with_cells, band_ids, temporal_resolution, **kwargs):
         vod_avg : pandas.DataFrame
             Average VOD values per grid cell
     """
-    global vod_ts_1
-    from dask.distributed import Client
-    Client()  # Initialize Dask client for parallel processing if needed
-    1
     # -------------------from dask.distributed import Client----------------
     # make ke per band and add to the band_ids if make_ke is True
     make_ke = kwargs.get('make_ke', False)  # whether to calculate extinction coefficient

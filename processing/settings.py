@@ -70,7 +70,7 @@ overwrite_anomaly_processing = True  # overwrite existing anomaly processing fil
 # parameters
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-single_file_interval = ('2024-04-01', "2024-04-03")
+single_file_interval = ('2024-04-01', "2024-06-20")
 visualization_timezone = "etc/GMT+6"
 
 # for ke calculation:
