@@ -144,29 +144,6 @@ def calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_re
             # Fall back to equal-width bins if not enough unique values
             bins = pd.cut(band_means, min(num_bins, len(band_means.unique())), labels=False)
         
-        if plot_bins:
-            # Calculate actual bin edges for visualization
-            if isinstance(bins, pd.Series):
-                # Get the unique bin values and their corresponding data
-                bin_groups = {}
-                for bin_num in range(num_bins):
-                    bin_groups[bin_num] = band_means[bins == bin_num]
-                
-                # Calculate min and max for each bin to use as edges
-                bin_edges = [bin_groups[i].min() for i in sorted(bin_groups.keys())]
-                bin_edges.append(bin_groups[max(bin_groups.keys())].max())
-                
-                from matplotlib import pyplot as plt
-                plt.figure(figsize=(5, 3))
-                band_means.hist(bins=30, alpha=0.5, label='VOD Means')
-                for edge in bin_edges:
-                    plt.axvline(edge, color='red', linestyle='--')
-                plt.axvline(bin_edges[0], color='red', linestyle='--', label='Bin Edges')  # Add label only once
-                plt.title(f"VOD Means Histogram with Bins for {band}")
-                plt.xlabel('VOD Mean Values')
-                plt.ylabel('Frequency')
-                plt.legend()
-                plt.show()
         
         # Create a mapping from CellID to bin
         cell_to_bin = pd.Series(bins.values, index=band_means.index, name='bin')
@@ -300,6 +277,8 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
     """
     agg_fun_ts = kwargs.get('agg_fun_ts', 'mean')
     suffix = kwargs.get('suffix', '')
+    plot_bins = kwargs.get('plot_bins', False)  # whether to plot the bin histograms for visualization
+    
     if suffix and not suffix.startswith('_'):
         suffix = f"_{suffix}"
     
@@ -379,7 +358,31 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
             
             # Add to results with appropriate column name
             combined_results[f"{band}_anom_bin{bin_num}{suffix}"] = bin_ts
-    
+        
+    if plot_bins:
+        # Calculate actual bin edges for visualization
+        if isinstance(bins, pd.Series):
+            # Get the unique bin values and their corresponding data
+            bin_groups = {}
+            for bin_num in range(biomass_bins):
+                bin_groups[bin_num] = band_means[bins == bin_num]
+            
+            # Calculate min and max for each bin to use as edges
+            bin_edges = [bin_groups[i].min() for i in sorted(bin_groups.keys())]
+            bin_edges.append(bin_groups[max(bin_groups.keys())].max())
+            
+            from matplotlib import pyplot as plt
+            plt.figure(figsize=(5, 3))
+            band_means.hist(bins=30, alpha=0.5, label='VOD Means')
+            for edge in bin_edges:
+                plt.axvline(edge, color='red', linestyle='--')
+            plt.axvline(bin_edges[0], color='red', linestyle='--', label='Bin Edges')  # Add label only once
+            plt.title(f"VOD Means Histogram with Bins for {band}")
+            plt.xlabel('VOD Mean Values')
+            plt.ylabel('Frequency')
+            plt.legend()
+            plt.show()
+
     return combined_results
 
 def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
@@ -575,6 +578,7 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
         )
         
         # All constellations
+        kwargs['plot_bins'] = True  # set to True to plot the bin histograms for visualization
         vod_ts_biomass_all = calculate_biomass_binned_anomalies(
             vod, vod_avg, band_ids, temporal_resolution,
             con=None, biomass_bins=biomass_bins, **kwargs

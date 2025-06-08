@@ -1,5 +1,61 @@
 # Scrapbook for task within `gnssvod`
 
+## 6/7/25
+
+This flowchart illustrates:
+1. The three input data sources
+2. Processing steps for each component:
+   - Long-term trend (precipitation filtering)
+   - Weekly trend (SBAS satellites)
+   - Diurnal pattern (high biomass filtering)
+3. Z-score transformation (the default method)
+4. Alternative combination methods
+5. Final VOD optimal estimator production
+
+The z-score approach standardizes each component before combining them, ensuring no single component dominates due to scale differences, then transforms back to the original scale and adds the long-term trend.
+
+```mermaidflowchart TD
+  subgraph "Input Data"
+    VOD1_anom["VOD anomaly"]
+    SBAS["SBAS Satellites (S33, S35)"]
+    VOD1_highbiomass["VOD anomaly (high-biomass, mean of bins 2-4 (of 0-4))"]
+    VOD["Raw VOD data"]
+  end
+
+  subgraph "Long-term Trend"
+    VOD1_anom -->|"Flag precipitation using >90th quantile VOD data (this should idealy be precipitation data)"| mask_precip["Mask precipitation"]
+    mask_precip -->|"Daily mean"| daily_mean["Daily VOD"]
+    daily_mean -->|"Interpolate gaps"| interp["Interpolated VOD"]
+    interp --> VOD1_daily["Daily VOD anomaly"]
+    VOD-->|"Add mean"| VOD1_daily["Daily VOD anomaly"]
+  end
+
+  subgraph "Weekly Trend"
+    SBAS -->|"Normalize bands (come in VOD, not anomaly)"| sbas_norm["Normalized SBAS"]
+    sbas_norm -->|"Calculate mean"| VOD-SBAS["VOD-SBAS"]
+  end
+
+  subgraph "Diurnal Pattern"
+    VOD1_highbiomass -->|"Savitzky-Golay filter"| sg_filter["Filtered signal"]
+    sg_filter -->|"(Optional LOESS), can the diurnal VOD contain a trend?)"| VOD-diurnal["VOD-diurnal"]
+  end
+
+  VOD1_daily --> Trend["Trend"]
+  VOD-SBAS --> weekly["weekly"]
+  VOD-diurnal --> diurnal["diurnal"]
+
+  subgraph "Z-Score Transformation"
+    weekly -->|"Standardize"| z_weekly["Z-weekly"]
+    diurnal -->|"Standardize"| z_diurnal["Z-diurnal"]
+    z_weekly & z_diurnal -->|"Sum"| z_sum["Z-sum"]
+    z_sum -->|"Back-transform using inverse mean coefficients (μ, σ)"| scaled_z["Scaled Z"]
+  end
+
+  scaled_z --> VOD_optimal_zscore["VOD_optimal_zscore"]
+  Trend -->|"add"|VOD_optimal_zscore["VOD_optimal_zscore"]
+
+  VOD_optimal_zscore -->|"Output options"| final["Final VOD"]
+```
 ## 6/6/25
 
 - Change standard time series aggregation to "median" instead of "mean" (more robust)

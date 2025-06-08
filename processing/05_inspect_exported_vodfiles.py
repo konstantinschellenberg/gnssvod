@@ -73,7 +73,7 @@ for col in vod.columns:
     has_s_in_name = 'S' in col
     
     # Apply all filters
-    if (is_vod_base or is_vod_ke or has_bin) and not (has_gps_suffix or has_gps_gal_suffix or has_s_in_name):
+    if (is_vod_base or is_vod_ke or has_bin or has_gps_suffix or has_gps_gal_suffix) and not (has_s_in_name):
         filtered_vars.append(col)
 
 print("Filtered variables for entire canopy:")
@@ -185,13 +185,15 @@ import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+# -----------------------------------
 # 1. Characterize precipitation patterns using VOD1_anom
 # Create flag for upper 10% of VOD1_anom (precipitation events)
-precip_threshold = vod_ts['VOD1_anom'].quantile(0.9)
-vod_ts['precip_flag'] = (vod_ts['VOD1_anom'] > precip_threshold).astype(int)
+daily_dataset = "VOD1_anom_gps+gal"  # Use this dataset for daily mean calculation
+precip_threshold = vod_ts[daily_dataset].quantile(0.9)
+vod_ts['precip_flag'] = (vod_ts[daily_dataset] > precip_threshold).astype(int)
 
 # Mask anomalies during precipitation events
-vod_ts['VOD1_anom_masked'] = vod_ts['VOD1_anom'].copy()
+vod_ts['VOD1_anom_masked'] = vod_ts[daily_dataset].copy()
 vod_ts.loc[vod_ts['precip_flag'] == 1, 'VOD1_anom_masked'] = np.nan
 
 # Calculate daily mean VOD only for days with sufficient data (at least 6 hours worth)
@@ -217,7 +219,7 @@ vod_ts['VOD1_daily'] = interpolated_daily.reindex(vod_ts.index, method='ffill')
 # add mean VOD1 value to VOD1_daily
 vod_ts['VOD1_daily'] = vod_ts['VOD1_daily'] + vod_ts['VOD1'].mean()
 
-
+# -----------------------------------
 # 2. Characterize weekly trends using SBAS data
 # Normalize each SBAS band by subtracting its mean
 sbas_bands = ['VOD1_S33', 'VOD1_S35']
@@ -237,6 +239,7 @@ else:
     print("Warning: No SBAS bands found in the dataset")
     vod_ts['VOD1_S_weekly'] = np.nan
 
+# -----------------------------------
 # 3. Process diurnal VOD descriptor with Savitzky-Golay filter
 if 'VOD1_anom_highbiomass' in vod_ts.columns:
     # Convert to numpy array for filtering, replacing NaNs with interpolation
@@ -266,7 +269,7 @@ if 'VOD1_anom_highbiomass' in vod_ts.columns:
         polyorder=2
     )
     
-    apply_loess = True
+    apply_loess = True  # Set to True to apply LOESS detrending
     if apply_loess:
         # detrend the filtered values by long-term loess filter
         from statsmodels.nonparametric.smoothers_lowess import lowess
@@ -290,6 +293,7 @@ vod_optimal = pd.DataFrame({
     'diurnal': vod_ts['VOD1_diurnal'],
 })
 
+# -----------------------------------
 # Add the combined optimal estimator with different arithmetic methods
 
 # 1. Simple addition (original method)
@@ -363,19 +367,22 @@ print(vod_optimal.head())
 
 plot_vod_fingerprint(vod_optimal, 'VOD_optimal_zscore', title="Optimal VOD (Z-Score Method)")
 
-fingerprint = False
+fingerprint = False  # Set to True to plot the fingerprint of the VOD data
 if fingerprint:
     # Plot the fingerprint of the VOD data
     
     # Trend
     plot_vod_fingerprint(vod_ts, 'VOD1_anom', title="VOD1 Anomaly")
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom_gps+gal', title="VOD1 Anomaly (GPS+Galileo)")
     plot_vod_fingerprint(vod_ts, 'precip_flag')
     plot_vod_fingerprint(vod_ts, 'VOD1_anom_masked', title="Masked VOD1 Anomaly (trend Events)")
     plot_vod_fingerprint(vod_ts, 'VOD1_daily', title="Daily Mean VOD1 Anomaly")
     
     # seasonal VOD
     plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1")
-    
+    plot_vod_fingerprint(vod_ts, 'VOD1_S33', title="SBAS VOD1 S33")
+    plot_vod_fingerprint(vod_ts, 'VOD1_S35', title="SBAS VOD1 S35")
+
     # diurnal VOD
     plot_vod_fingerprint(vod_ts, 'VOD1_anom_highbiomass', title="VOD1 Anomaly High Biomass")
     plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly (Savitzky-Golay Filtered)")
@@ -399,11 +406,10 @@ if fingerprint:
 # time series plot
 # Static matplotlib plot
 
-figsize = (7, 4)
+figsize = (4, 3)
 
 plot = False
 if plot:
-    
     # Components
     plot_vod_timeseries(vod_ts, ['VOD1_S_weekly'], figsize=figsize)
     plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize)
@@ -416,12 +422,27 @@ wvlt = False
 if wvlt:
     analyze_wavelets(vod_optimal, 'VOD_optimal_zscore')
     
-diurnal = True
+diurnal = False
 if diurnal:
     plot_diurnal_cycle(vod_optimal, ['VOD_optimal_zscore'],
-                           normalize="daily", ncols=1,
-                           title="Daily Normalized Diurnal Cycles",
+                           normalize=None, ncols=1,
+                           title="Optimal Diurnal Cycles",
                           figsize=(4, 4))
+    plot_diurnal_cycle(vod_ts, ['VOD1_S_weekly'],
+                           normalize=None, ncols=1,
+                           title="SBAS diurnal Cycles",
+                          figsize=(4, 4))
+    plot_diurnal_cycle(vod_ts, ['VOD1_diurnal'],
+                           normalize=None, ncols=1,
+                           title="High Biomass diurnal Cycles",
+                          figsize=(4, 4))
+
+hist = True
+if hist:
+    # Single histogram
+    # Multiple histograms in a grid
+    plot_histogram(vod_optimal, ['VOD_optimal_zscore', 'trend', 'weekly_trend', 'diurnal'],
+                   bins=50, percentiles=[5, 95])
 
 # # -----------------------------------
 # # diurnal plot

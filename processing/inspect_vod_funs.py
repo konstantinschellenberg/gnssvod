@@ -48,6 +48,8 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     from matplotlib.cm import get_cmap
     import pandas as pd
     
+    filename = filename or f"diurnal_cycle_{'_'.join([str(v) for v in vars])}.png"
+    
     # Make a copy to avoid modifying the original
     df = df.copy()
     
@@ -146,7 +148,7 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
         ax.grid(True, linestyle='--', alpha=0.7)
         ax.set_xlim(0, 23)
         ax.set_xticks(np.arange(0, 24, 3))
-        ax.legend(loc='best', fontsize='small')
+        # ax.legend(loc='best', fontsize='small')
     
     # Hide unused subplots
     for j in range(len(vars), len(axes)):
@@ -305,9 +307,9 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
         hours = int(x)
         minutes = int((x - hours) * 60)
         if high_res and minutes > 0:
-            return f"{hours:02d}:{minutes:02d}"
+            return f"{hours:02d}"
         else:
-            return f"{hours:02d}:00"
+            return f"{hours:02d}"
 
     # Process each variable
     for i, row in enumerate(vars):
@@ -429,7 +431,7 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
     return fig
 
 
-def plot_vod_timeseries(df, variables, interactive=True, title=None, figsize=(8, 5), **kwargs):
+def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8, 5), **kwargs):
     """
     Plot VOD time series data for specified variables with customizable styling.
 
@@ -1343,4 +1345,156 @@ def plot_vod_by_author(df, author, save_dir=None):
     plt.savefig(save_dir / f"vod_{author}_style.png", dpi=300)
     plt.show()
     
+    return fig
+
+
+def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), ncols=2,
+                   color='skyblue', percentile_color='red', title=None, filename=None, **kwargs):
+    """
+    Create single or grid of histograms with vertical lines at specified percentiles.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing the data
+    vars : list of str or list of tuples
+        Variable names to plot as histograms. Can be grouped as tuples for subplots
+    percentiles : list, default=[25, 50, 75]
+        Percentiles to mark with vertical lines
+    bins : int or list or str, default=50
+        Number of bins, bin edges, or binning strategy (e.g., 'auto', 'fd')
+    figsize : tuple, default=(8, 6)
+        Figure size (width, height) in inches
+    ncols : int, default=2
+        Number of columns in the subplot grid
+    color : str or list, default='skyblue'
+        Color(s) for histogram bars
+    percentile_color : str, default='red'
+        Color for percentile vertical lines
+    title : str, optional
+        Overall figure title
+    filename : str, optional
+        Filename to save the plot
+    **kwargs : dict
+        Additional keyword arguments for histogram customization:
+        - alpha : float, opacity of histogram bars
+        - edgecolor : str, color of histogram bar edges
+        - density : bool, whether to normalize the histogram
+        - grid : bool, whether to show grid lines
+        - hist_kwargs : dict, additional arguments for plt.hist
+        - show_percentile_values : bool, whether to display percentile values
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from pathlib import Path
+    
+    # Process kwargs
+    alpha = kwargs.get('alpha', 0.7)
+    edgecolor = kwargs.get('edgecolor', 'black')
+    density = kwargs.get('density', False)
+    grid = kwargs.get('grid', True)
+    hist_kwargs = kwargs.get('hist_kwargs', {})
+    show_percentile_values = kwargs.get('show_percentile_values', True)
+    
+    # Create filename if not provided
+    if filename is None:
+        if isinstance(vars, str):
+            filename = f"histogram_{vars}.png"
+        else:
+            filename = f"histogram_{'_'.join([str(v) for v in vars])}.png"
+    
+    # Convert single variable to list
+    if isinstance(vars, str):
+        vars = [vars]
+    
+    # Convert vars to list of tuples for consistent processing
+    if not all(isinstance(v, (list, tuple)) for v in vars):
+        vars = [(v,) for v in vars]
+    
+    # Calculate number of rows needed
+    nrows = (len(vars) + ncols - 1) // ncols
+    
+    # Create figure and axes
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+    
+    # Ensure axes is always iterable
+    if nrows * ncols == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # Process each variable or variable group
+    for i, var_tuple in enumerate(vars):
+        if i >= len(axes):
+            break
+        
+        ax = axes[i]
+        
+        # Process each variable in the tuple
+        for j, var in enumerate(var_tuple):
+            if var not in df.columns:
+                print(f"Warning: Variable '{var}' not found in DataFrame, skipping.")
+                continue
+            
+            # Get data and remove NaNs
+            data = df[var].dropna().values
+            
+            # Get color for this variable
+            var_color = color[j] if isinstance(color, list) and j < len(color) else color
+            
+            # Plot histogram
+            n, bins_out, patches = ax.hist(
+                data, bins=bins, color=var_color, alpha=alpha,
+                edgecolor=edgecolor, density=density, **hist_kwargs
+            )
+            
+            # Add percentile lines
+            for p in percentiles:
+                percentile_value = np.percentile(data, p)
+                ax.axvline(
+                    percentile_value, color=percentile_color,
+                    linestyle='--', linewidth=1.5
+                )
+                
+                # Add text with percentile value
+                if show_percentile_values:
+                    # Position text at top of the histogram
+                    max_height = max(n) * 0.95
+                    ax.text(
+                        percentile_value, max_height,
+                        f"{p}%: {percentile_value:.3f}",
+                        color=percentile_color, fontsize=8,
+                        ha='center', va='top', rotation=90,
+                        backgroundcolor='white', alpha=0.7
+                    )
+            
+            # Set title and labels
+            ax.set_title(f"Histogram of {var}")
+            ax.set_xlabel(var)
+            ax.set_ylabel("Frequency" if not density else "Density")
+            
+            # Add grid
+            if grid:
+                ax.grid(True, linestyle='--', alpha=0.5)
+    
+    # Hide unused subplots
+    for j in range(len(vars), len(axes)):
+        axes[j].set_visible(False)
+    
+    # Set overall title if provided
+    if title:
+        fig.suptitle(title, fontsize=16)
+        plt.subplots_adjust(top=0.92)  # Make room for title
+    
+    plt.tight_layout()
+    
+    # Save figure if path provided
+    if filename:
+        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
+    
+    plt.show()
     return fig
