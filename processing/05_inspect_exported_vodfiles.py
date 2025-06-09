@@ -418,7 +418,7 @@ if plot:
     # Result z-score
     plot_vod_timeseries(vod_optimal, ['VOD_optimal_zscore'], interactive=True)
 
-wvlt = False
+wvlt = True
 if wvlt:
     analyze_wavelets(vod_optimal, 'VOD_optimal_zscore')
     
@@ -437,7 +437,7 @@ if diurnal:
                            title="High Biomass diurnal Cycles",
                           figsize=(4, 4))
 
-hist = True
+hist = False
 if hist:
     # Single histogram
     # Multiple histograms in a grid

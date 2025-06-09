@@ -207,6 +207,8 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
 
     # Make a copy to avoid modifying the original
     df = df.copy()
+    
+    save_dir = kwargs.get('save_dir', FIG)
 
     # Extract time of day as decimal hours (preserving native resolution)
     if isinstance(df.index, pd.DatetimeIndex):
@@ -425,7 +427,7 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
 
     filename = f"vod_fingerprint_{var_str}.png"
     plt.tight_layout()
-    plt.savefig(FIG / filename, dpi=300)
+    plt.savefig(save_dir / filename, dpi=300)
     plt.show()
 
     return fig
