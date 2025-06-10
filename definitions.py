@@ -36,9 +36,10 @@ def get_relative_path_to_root(current_file):
 ROOT = get_repo_root()  # get the root path of the project
 FIG = ROOT / "figures"
 DATA = ROOT / "data"
+ZIP = ROOT / 'zip_archive'
 AUX = DATA / 'orbit'
 TEST = DATA / "test"
-ZIP = ROOT / 'zip_archive'
+ARD = DATA / 'ard'
 
 GROUND = 'subcanopy/MOz1_Grnd'
 TOWER = 'tower/MOz2_Twr'

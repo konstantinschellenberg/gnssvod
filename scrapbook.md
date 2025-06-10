@@ -1,5 +1,9 @@
 # Scrapbook for task within `gnssvod`
 
+Todos:
+- Write metadata and filename specification in `04_merge…`
+- Precipiation filter is horrible for long time series!!
+
 ## 6/9/25
 
 - Calculation of bins now band-specific

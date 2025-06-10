@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import numpy as np
-import pandas as pd
 
 from definitions import DATA
 from processing.inspect_vod_funs import characterize_precipitation, characterize_weekly_trends, \
@@ -141,7 +140,7 @@ if __name__ == "__main__":
             # 1. Characterize precipitation patterns using VOD1_anom
             
             print("Characterizing precipitation patterns...")
-            precips = characterize_precipitation(vod_merged, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
+            precips = characterize_precipitation(vod_merged, dataset_col='VOD1_anom_gps+gal', precip_quantile=precip_quantile,
                                                  min_hours_per_day=12)
             
             print("Characterizing weekly trends...")

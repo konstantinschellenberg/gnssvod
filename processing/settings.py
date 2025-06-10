@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import pandas as pd
-from matplotlib import rcParams
 
+from definitions import ARD
 from gnssvod.geodesy.coordinate import ell2cart
 from processing.helper import create_time_intervals
 
@@ -61,7 +61,14 @@ timeintervals_closed = 'left'
 
 # general settings
 batch_run = True  # run all years in batch mode
+time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)
+"""
+Runs:
+
 time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
+time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)
+
+"""
 
 # set to True to iterate over parameters (angular_resolution, angular_cutoff, temporal_resolution)
 iterate_parameters = False
@@ -77,7 +84,6 @@ add_sbas_position_manually = True  # add SBAS position to VOD files
 # parameters, L5 currently not really implemented, but should work when debugged
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-single_file_interval = ('2023-04-15', "2023-04-30")
 visualization_timezone = "etc/GMT+6"
 
 # for ke calculation:
@@ -126,29 +132,18 @@ angular_cutoff = 30
 multiple_parameters = False  # set to True to iterate over parameters
 
 # VOD "optimized" settings
+precip_quantile = 0.95  # cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
 minimum_nsat = 13  # minimum number of satellites in view on average in a time interval to be considered valid
 min_vod_quantile = 0.05  # cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
 
-"""
-Use this time interface for time series selection
-"""
+# todo: will be rename to be specific
+vod_file = ARD / "combined_vod_data_MOz_2022_to_2025.parquet"
 
 # subset must be in tz
 time_subset = ('2023-05-15', "2024-12-30")  # ("2024-01-01", "2024-12-30")
-
-load_mode = 'single_file'  # 'multi_year' or single_file or supply_path
-
-# single file
-single_file_settings = {
-    'station': 'MOz',
-    'time_interval':  single_file_interval,
-    # 'anomaly_type': 'unknown',  # or 'phi_theta' or 'phi_theta_sv'
-}
-
-final_vod_path = "combined_vod_data_MOz_2022_to_2025.csv"
 
 # -----------------------------------
 # settings (static)

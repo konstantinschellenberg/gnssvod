@@ -18,7 +18,8 @@ class VODReader:
     
     def __init__(self, file_path_or_settings: Optional[Union[str, Path, Dict]] = None,
                  gatheryears: Dict[str, tuple] = None,
-                 transform_time: bool = True):
+                 transform_time: bool = True,
+                 verbose: bool = False):
         """
         Initialize the VOD reader with optional file path, settings dictionary, or list of years.
 
@@ -37,6 +38,7 @@ class VODReader:
         self.metadata = None
         self.loaded = False
         self.transform_time = transform_time  # Whether to transform time to a specific timezone
+        self.verbose = verbose
         
         # Load default settings from settings.py
         self._load_default_settings()
@@ -212,8 +214,8 @@ class VODReader:
         
         # Load the newest matching file
         newest_file, metadata_file = matching_files[0]
-        print(f"Found matching file: {Path(newest_file).name}")
-        print(f"Loading file with metadata: {Path(metadata_file).name}")
+        print(f"Found matching file: {Path(newest_file).name}") if self.verbose else None
+        print(f"Loading file with metadata: {Path(metadata_file).name}") if self.verbose else None
         
         return self.load_file(newest_file)
     
@@ -327,7 +329,7 @@ class VODReader:
                 'time_interval': single_file_interval
             }
         except ImportError:
-            print("Warning: Could not import settings from processing.settings")
+            print("Warning: Could not import settings from processing.settings") if self.verbose else None
             self.default_settings = {}
             
     def _prep_data(self):
@@ -412,7 +414,7 @@ class VODReader:
             if self.metadata_path.exists():
                 with open(self.metadata_path, 'r') as f:
                     self.metadata = json.load(f)
-                    print(f"Loaded metadata from {self.metadata_path}")
+                    print(f"Loaded metadata from {self.metadata_path}") if self.verbose else None
             else:
                 print(f"Warning: No metadata file found at {self.metadata_path}")
                 self.metadata = self.default_settings

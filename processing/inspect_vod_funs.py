@@ -48,6 +48,7 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     from matplotlib.cm import get_cmap
     import pandas as pd
     
+    save_dir = kwargs.get('save_dir', FIG)
     filename = filename or f"diurnal_cycle_{'_'.join([str(v) for v in vars])}.png"
     
     # Make a copy to avoid modifying the original
@@ -79,7 +80,7 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     nrows = (len(vars) + ncols - 1) // ncols
     
     # Create figure and axes
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, **kwargs)
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
     
     # Ensure axes is always iterable
     if nrows * ncols == 1:
@@ -163,7 +164,7 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     
     # Save figure if filename is provided
     if filename:
-        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
+        plt.savefig(save_dir / filename, dpi=300, bbox_inches='tight')
     
     plt.show()
     return fig
@@ -494,6 +495,7 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
     grid = kwargs.get('grid', True)
     filename = kwargs.get('filename', None)
     daily_average = kwargs.get('daily_average', False)
+    save_dir = kwargs.get('save_dir', FIG)
     
     if interactive :
         # Plotly version
@@ -642,7 +644,7 @@ def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8
         if not filename:
             filename = f"vod_timeseries_{'_'.join(variables)}.png"
         
-        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
+        plt.savefig(save_dir / filename, dpi=300, bbox_inches='tight')
         plt.show()
 
 def plot_vod_scatter(df, x_var=None, y_var=None, polarization='compare', algo='tps',
@@ -1399,6 +1401,7 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     grid = kwargs.get('grid', True)
     hist_kwargs = kwargs.get('hist_kwargs', {})
     show_percentile_values = kwargs.get('show_percentile_values', True)
+    save_dir = kwargs.get('save_dir', FIG)
     
     # Create filename if not provided
     if filename is None:
@@ -1493,7 +1496,7 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     
     # Save figure if path provided
     if filename:
-        plt.savefig(FIG / filename, dpi=300, bbox_inches='tight')
+        plt.savefig(save_dir / filename, dpi=300, bbox_inches='tight')
     
     plt.show()
     return fig
@@ -1522,9 +1525,26 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
     """
     result = pd.DataFrame(index=df.index)
     
-    # Create flag for upper quantile (precipitation events)
-    precip_threshold = df[dataset_col].quantile(precip_quantile)
-    result['precip_flag'] = (df[dataset_col] > precip_threshold).astype(int)
+    # Create flag for upper quantile (precipitation events) based on monthly thresholds
+    result['precip_flag'] = 0  # Initialize flag with zeros
+    result['month'] = df.index.month  # Extract month information
+    
+    # Calculate and apply threshold for each month separately
+    for month in result['month'].unique():
+        # Get data for this month only
+        month_data = df.loc[df.index.month == month, dataset_col]
+        
+        if not month_data.empty:
+            # Calculate threshold for this month
+            month_threshold = month_data.quantile(precip_quantile)
+            
+            # Apply threshold to flag precipitation events for this month
+            month_mask = (df.index.month == month) & (df[dataset_col] > month_threshold)
+            result.loc[month_mask, 'precip_flag'] = 1
+    
+    # Convert to integer type and drop the temporary month column
+    result['precip_flag'] = result['precip_flag'].astype(int)
+    result.drop('month', axis=1, inplace=True)
     
     # Mask anomalies during precipitation events
     result['VOD1_anom_masked'] = df[dataset_col].copy()
