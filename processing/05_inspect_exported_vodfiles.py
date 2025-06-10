@@ -9,6 +9,11 @@ FIG = FIG / "vod_inspection"
 FIG.mkdir(parents=True, exist_ok=True)
 
 # -----------------------------------
+# local settings
+
+plotall = False  # Set to True to plot all VOD data
+
+# -----------------------------------
 
 # read parquet to pandas DataFrame
 vod_ts = pd.read_parquet(vod_file, engine='pyarrow')
@@ -19,9 +24,11 @@ vod_ts = pd.read_parquet(vod_file, engine='pyarrow')
 # vizualization
 
 plot_vod_fingerprint(vod_ts, 'VOD_optimal_zscore', title="Optimal VOD (Z-Score Method)")
+# plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1", save_dir=FIG)
+# plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly_trend', title="Weekly Mean SBAS VOD1", save_dir=FIG)
 
 fingerprint = False  # Set to True to plot the fingerprint of the VOD data
-if fingerprint:
+if fingerprint or plotall:
     # Plot the fingerprint of the VOD data
     
     # Trend
@@ -62,7 +69,7 @@ if fingerprint:
 figsize = (4, 3)
 
 plot = False
-if plot:
+if plot or plotall:
     # Components
     plot_vod_timeseries(vod_ts, ['VOD1_S_weekly'], figsize=figsize, save_dir = FIG)
     plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize, save_dir = FIG)
@@ -72,13 +79,13 @@ if plot:
     plot_vod_timeseries(vod_ts, ['VOD_optimal_zscore'], interactive=True)
 
 # -----------------------------------
-wvlt = True
-if wvlt:
+wvlt = False
+if wvlt or plotall:
     analyze_wavelets(vod_ts, 'VOD1_S_weekly')
     
 # -----------------------------------
 diurnal = False
-if diurnal:
+if diurnal or plotall:
     plot_diurnal_cycle(vod_ts, ['VOD_optimal_zscore'],
                            normalize=None, ncols=1,
                            title="Optimal Diurnal Cycles",
@@ -93,7 +100,7 @@ if diurnal:
                           figsize=(4, 4), save_dir = FIG)
 
 hist = False
-if hist:
+if hist or plotall:
     # Single histogram
     # Multiple histograms in a grid
     plot_histogram(vod_ts, ['VOD_optimal_zscore', 'trend', 'weekly_trend', 'diurnal'],

@@ -135,12 +135,13 @@ multiple_parameters = False  # set to True to iterate over parameters
 precip_quantile = 0.95  # cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
 minimum_nsat = 13  # minimum number of satellites in view on average in a time interval to be considered valid
 min_vod_quantile = 0.05  # cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
+detrend_weekly = False
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
 
 # todo: will be rename to be specific
-vod_file = ARD / "combined_vod_data_MOz_2022_to_2025.parquet"
+vod_file = ARD / "combined_vod_data_MOz_2024_to_2024.parquet"
 
 # subset must be in tz
 time_subset = ('2023-05-15', "2024-12-30")  # ("2024-01-01", "2024-12-30")

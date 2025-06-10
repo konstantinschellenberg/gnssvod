@@ -1574,8 +1574,8 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
     
     return result
 
-
-def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], **kwargs):
+def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=True,
+                              loess_frac=0.3, min_periods=10, **kwargs):
     """
     Characterize weekly trends using SBAS data.
 
@@ -1585,12 +1585,22 @@ def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], **kwargs
         Input dataframe with VOD time series
     sbas_bands : list
         List of SBAS band column names to use
+    detrend : bool, default=False
+        Whether to detrend the data using LOESS smoothing
+    loess_frac : float, default=0.3
+        Fraction of data used for LOESS smoothing (controls smoothness)
+    min_periods : int, default=10
+        Minimum number of observations required for LOESS fitting
 
     Returns:
     --------
     pandas.DataFrame
         New columns: normalized bands and 'VOD1_S_weekly'
     """
+    import pandas as pd
+    import numpy as np
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
     result = pd.DataFrame(index=df.index)
     normalized_bands = []
     
@@ -1605,11 +1615,51 @@ def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], **kwargs
     # Calculate mean of normalized SBAS bands for weekly trends
     if normalized_bands:
         result['VOD1_S_weekly'] = result[normalized_bands].mean(axis=1)
+        
+        # Apply detrending if requested
+        if detrend and not result['VOD1_S_weekly'].isna().all():
+            # Resample to daily frequency for trend extraction
+            daily_data = result['VOD1_S_weekly'].resample('D').mean()
+            daily_data = daily_data.dropna()
+            
+            if len(daily_data) >= min_periods:
+                # Create time index as float for LOESS (days since start)
+                time_idx = np.array((daily_data.index - daily_data.index[0]).total_seconds() / (24*3600))
+                
+                # Apply LOESS smoothing to extract trend
+                if len(daily_data) > 2:  # Need at least 3 points for smoothing
+                    smooth_result = lowess(
+                        daily_data.values,
+                        time_idx,
+                        frac=loess_frac,
+                        return_sorted=False
+                    )
+                    
+                    # Create a Series with the trend
+                    trend = pd.Series(smooth_result, index=daily_data.index)
+                    
+                    # Reindex to original frequency and interpolate
+                    trend_reindexed = trend.reindex(result.index, method='nearest')
+                    
+                    # Store both the trend and detrended data
+                    result['VOD1_S_weekly_trend'] = trend_reindexed
+                    result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly'] - trend_reindexed
+                    result["VOD1_S_weekly"] = result['VOD1_S_weekly_detrended']
+                else:
+                    # If too few points for LOESS, just subtract mean
+                    result['VOD1_S_weekly_trend'] = daily_data.mean()
+                    result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly'] - daily_data.mean()
+            else:
+                # Not enough periods for detrending
+                result['VOD1_S_weekly_trend'] = np.nan
+                result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly']
     else:
         result['VOD1_S_weekly'] = np.nan
+        if detrend:
+            result['VOD1_S_weekly_trend'] = np.nan
+            result['VOD1_S_weekly_detrended'] = np.nan
     
     return result
-
 
 def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
                         window_hours=6, polyorder=2, apply_loess=True,

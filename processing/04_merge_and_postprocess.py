@@ -51,7 +51,7 @@ if __name__ == "__main__":
         print(f"Processing VOD data for interval {interval_key}...")
         
         # Create reader with automatic file selection
-        reader = VODReader(settings)
+        reader = VODReader(settings, transform_time=False)
         
         # Get the data
         vod = reader.get_data(format='long')
@@ -144,7 +144,7 @@ if __name__ == "__main__":
                                                  min_hours_per_day=12)
             
             print("Characterizing weekly trends...")
-            weekly = characterize_weekly_trends(vod_merged, sbas_bands=['VOD1_S33', 'VOD1_S35'])
+            weekly = characterize_weekly_trends(vod_merged, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=detrend_weekly)
             
             print("Processing diurnal VOD patterns...")
             diurnal = process_diurnal_vod(vod_merged, diurnal_col='VOD1_anom_highbiomass',
