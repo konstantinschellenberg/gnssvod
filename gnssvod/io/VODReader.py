@@ -89,148 +89,131 @@ class VODReader:
     
     def load_from_settings(self, settings: Dict):
         """
-        Search for and load the most recent VOD file matching the given settings.
-        If no matching file is found, displays a table of available files with their settings.
+        Search for and load VOD files matching the given settings by checking metadata files.
 
         Parameters
         ----------
         settings : Dict
-            Dictionary containing search parameters like station, time_interval, etc.
+            Dictionary containing search parameters like station, time_interval,
+            angular_resolution, temporal_resolution, angular_cutoff, etc.
 
         Returns
         -------
         self : VODReader
             Returns self for method chaining
         """
+        from definitions import DATA
+        import glob
+        import json
+        import os
+        
         # Extract key parameters from settings
         station = settings.get('station', self.default_settings.get('station', 'MOz'))
         time_interval = settings.get('time_interval', self.default_settings.get('time_interval'))
-        # multiple_parameters = settings.get('anomaly_processing')['multi_parameter']
+        angular_resolution = settings.get('angular_resolution', 2)
+        temporal_resolution = settings.get('temporal_resolution', 30)
+        angular_cutoff = settings.get('angular_cutoff', 30)
         
         # Get the base directory for VOD time series files
-        from definitions import DATA
         base_dir = DATA / "timeseries"
         
-        # Search for all VOD files for this station
-        import glob
-        pattern = str(base_dir / f"vod_timeseries_{station}_*.nc")
-        all_files = glob.glob(pattern)
+        # Search for all VOD metadata files for this station
+        pattern = str(base_dir / f"vod_timeseries_{station}_*_metadata.json")
+        all_metadata_files = glob.glob(pattern)
         
-        if not all_files:
+        if not all_metadata_files:
+            print(f"No metadata files found for station: {station}")
             self._show_available_files(settings)
             return self
         
-        # Keep track of all available files and their metadata for potential display
-        available_files_info = []
+        matching_files = []
+        file_info_list = []
         
-        # Filter by date range if specified
-        date_filtered_files = []
-        if time_interval:
-            start_date, end_date = time_interval
-            
-            # Convert to datetime if they're strings
-            if isinstance(start_date, str):
-                start_date = pd.to_datetime(start_date)
-            if isinstance(end_date, str):
-                end_date = pd.to_datetime(end_date)
-            
-            for file_path in all_files:
-                file_info = {"file": Path(file_path).name}
+        # Check each metadata file for matching criteria
+        for metadata_file in all_metadata_files:
+            try:
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
                 
-                try:
-                    # Extract dates from filename
-                    parts = Path(file_path).stem.split('_')
-                    if len(parts) >= 5:
-                        file_start = pd.to_datetime(parts[3], format='%Y%m%d')
-                        file_info["start_date"] = file_start.strftime('%Y-%m-%d')
+                # Create file info for potential display
+                file_info = {
+                    "file": Path(metadata_file).name.replace('_metadata.json', '.nc'),
+                    "station": metadata.get("station", "unknown"),
+                    "time_start": metadata.get("time_interval", {}).get("start_date", "unknown"),
+                    "time_end": metadata.get("time_interval", {}).get("end_date", "unknown"),
+                }
+                
+                # Check if this file matches our criteria
+                if metadata.get("station") == station:
+                    # Check time interval if provided
+                    if time_interval:
+                        file_start = metadata.get("time_interval", {}).get("start_date")
+                        file_end = metadata.get("time_interval", {}).get("end_date")
                         
-                        # Extract end date
-                        end_str = ''.join(c for c in parts[4] if c.isdigit())[:8]
-                        file_end = pd.to_datetime(end_str, format='%Y%m%d')
-                        file_info["end_date"] = file_end.strftime('%Y-%m-%d')
+                        # Skip if time intervals don't overlap
+                        if file_start and file_end:
+                            file_start_dt = pd.to_datetime(file_start)
+                            file_end_dt = pd.to_datetime(file_end)
+                            req_start_dt = pd.to_datetime(time_interval[0])
+                            req_end_dt = pd.to_datetime(time_interval[1])
+                            
+                            if file_end_dt < req_start_dt or file_start_dt > req_end_dt:
+                                continue
+                    
+                    # Look for angular resolution, temporal resolution, and cutoff parameters
+                    # Try to find these parameters in different locations in the metadata
+                    
+                    # First check in "results" variables if they contain these parameters
+                    found_resolution_params = False
+                    if "results" in metadata and "variables" in metadata["results"]:
+                        if ("angular_resolution" in metadata["results"]["variables"] and
+                                "temporal_resolution" in metadata["results"]["variables"] and
+                                "angular_cutoff" in metadata["results"]["variables"]):
+                            # The file contains these parameters as data variables
+                            # We consider this a match as we can check actual values after loading
+                            nc_file = metadata_file.replace('_metadata.json', '.nc')
+                            matching_files.append((nc_file, metadata_file))
+                            found_resolution_params = True
+                    
+                    # If not found in results, check in anomaly_processing section
+                    if not found_resolution_params:
+                        ap = metadata.get("anomaly_processing", {})
                         
-                        # Add metadata if available
-                        meta_path = Path(str(file_path).replace('.nc', '_metadata.json'))
-                        if meta_path.exists():
-                            with open(meta_path, 'r') as f:
-                                file_metadata = json.load(f)
-                                file_info.update({
-                                    "anomaly_type": file_metadata.get("anomaly_type", "unknown"),
-                                    "angular_resolution": file_metadata.get("angular_resolution", "unknown"),
-                                    "temporal_resolution": file_metadata.get("temporal_resolution", "unknown"),
-                                    "multiple_parameters": file_metadata.get('anomaly_processing', {}).get('multi_parameter', "unknown"),
-                                })
-                    
-                    # Check if file date range matches the requested range
-                    if (file_start == start_date and file_end == end_date):
-                        date_filtered_files.append(file_path)
-                    
-                    available_files_info.append(file_info)
-                except (ValueError, IndexError):
-                    continue
+                        # Extract parameters, checking different possible locations
+                        ar_value = ap.get("angular_resolution")
+                        tr_value = ap.get("temporal_resolution")
+                        ac_value = ap.get("angular_cutoff")
+                        
+                        # Add to file_info for display
+                        file_info["angular_resolution"] = ar_value
+                        file_info["temporal_resolution"] = tr_value
+                        file_info["angular_cutoff"] = ac_value
+                        
+                        # Check if parameters match
+                        if (ar_value == angular_resolution and
+                                tr_value == temporal_resolution and
+                                ac_value == angular_cutoff):
+                            nc_file = metadata_file.replace('_metadata.json', '.nc')
+                            matching_files.append((nc_file, metadata_file))
+                
+                file_info_list.append(file_info)
             
-            if date_filtered_files:
-                all_files = date_filtered_files
-            else:
-                print(f"No VOD files found for station: {station} in the specified time interval {time_interval}")
-                self._display_available_files_table(available_files_info, settings)
-                return self
-            
-        # Filter by metadata properties
-        metadata_filtered = []
-        if any(k not in ['station', 'time_interval'] for k in settings.keys()):
-            for file_path in all_files:
-                meta_path = Path(str(file_path).replace('.nc', '_metadata.json'))
-                if meta_path.exists():
-                    try:
-                        with open(meta_path, 'r') as f:
-                            file_metadata = json.load(f)
-                            
-                            # Check if all specified settings match
-                            matches = True
-                            for key, value in settings.items():
-                                if key in ['station', 'time_interval']:
-                                    continue
-                                
-                                if key == 'anomaly_processing':
-                                    # Special handling for anomaly_processing dictionary
-                                    if 'anomaly_processing' in file_metadata:
-                                        # Check multi_parameter setting
-                                        if ('multi_parameter' in value and
-                                                ('multi_parameter' not in file_metadata['anomaly_processing'] or
-                                                 file_metadata['anomaly_processing']['multi_parameter'] != value[
-                                                     'multi_parameter'])):
-                                            matches = False
-                                            break
-                                elif key in file_metadata and str(file_metadata[key]) != str(value):
-                                    matches = False
-                                    break
-                            
-                            if matches:
-                                metadata_filtered.append(file_path)
-                    except Exception as e:
-                        print(f"Error reading metadata for {file_path}: {e}")
-                        continue
-            
-            if metadata_filtered:
-                all_files = metadata_filtered
-            else:
-                print(f"No VOD files found with specified metadata criteria")
-                self._display_available_files_table(available_files_info, settings)
-                return self
+            except Exception as e:
+                print(f"Error reading metadata file {metadata_file}: {e}")
         
-        if not all_files:
-            print(f"No VOD files matching all criteria for station: {station}")
-            self._display_available_files_table(available_files_info, settings)
+        # If no matching files found, display available files
+        if not matching_files:
+            print("No files matching the specified criteria were found.")
+            self._display_available_files_table(file_info_list, settings)
             return self
         
-        # Sort by modification time (newest first)
-        all_files.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
+        # Sort matching files by date, newest first
+        matching_files.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
         
-        # Load the most recent file
-        newest_file = all_files[0]
-        print(f"Found {len(all_files)} matching files")
-        print(f"Loading most recent: {Path(newest_file).name}")
+        # Load the newest matching file
+        newest_file, metadata_file = matching_files[0]
+        print(f"Found matching file: {Path(newest_file).name}")
+        print(f"Loading file with metadata: {Path(metadata_file).name}")
         
         return self.load_file(newest_file)
     
@@ -261,15 +244,14 @@ class VODReader:
                 print(f"  {key}: {value}")
         
         print("\nAvailable files:")
-        pd.set_option('display.max_rows', 20)
         pd.set_option('display.max_columns', None)
         pd.set_option('display.width', None)
         
         # Sort by start_date (newest first)
         if 'start_date' in df.columns:
-            df = df.sort_values('start_date', ascending=False)
+            df = df.sort_values('create_datetime_metadata', ascending=False)
         
-        print(df)
+        print(df.head(20))
         print("\nUse one of these files directly with VODReader(file_path) or adjust your settings.")
     
     def _show_available_files(self, settings):

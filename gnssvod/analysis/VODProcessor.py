@@ -16,9 +16,8 @@ from definitions import DATA
 import gnssvod as gv
 from gnssvod.io.preprocess import get_filelist
 from processing.filepattern_finder import create_time_filter_patterns, filter_files_by_date
-from processing.settings import bands, station, moflux_coordinates, add_sbas_position_manually
-from gnssvod.analysis.calculate_anomalies import calculate_anomaly
-from satellite_information import sbas_ident
+from processing.settings import bands, sbas_ident, station, moflux_coordinates, add_sbas_position_manually
+from analysis.calculate_anomalies import calculate_anomaly
 
 
 # Process files individually and concatenate the DataFrames
@@ -126,6 +125,7 @@ class VODProcessor:
         overwrite : bool, default=False
             Whether to overwrite existing files
         """
+        self.vod_file_temp = None
         self.anomaly_params = None
         self.vod_processing_params = None
         self.vod_filename = None
@@ -165,6 +165,13 @@ class VODProcessor:
             if not isinstance(date, str) or not pd.to_datetime(date, errors='coerce'):
                 raise ValueError("Both start_date and end_date must be valid date strings in 'YYYY-MM-DD' format.")
         
+    def _print_interval(self):
+        """
+        Print the time interval in a human-readable format.
+        """
+        start_date = pd.to_datetime(self.time_interval[0])
+        end_date = pd.to_datetime(self.time_interval[1])
+        print(f"Processing data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         
     def _concat_nc_files(self, filepattern, interval, n_workers=15):
         from dask.distributed import Client, LocalCluster
@@ -185,9 +192,6 @@ class VODProcessor:
         print("Number of files found: ", len(files['']))
         print("Average filesize: ", np.mean([os.path.getsize(x) / 1e6 for x in files['']]).round(2), "MB")
         print("Total size: ", np.sum([os.path.getsize(x) / 1e6 for x in files['']]).round(2), "MB")
-        
-        from datetime import datetime
-        start = datetime.now()
         
         # Process files in parallel using ThreadPoolExecutor
         print("Processing files individually in parallel...")
@@ -212,10 +216,6 @@ class VODProcessor:
         
         # Clean up memory
         del valid_dfs
-        
-        end = datetime.now()
-        print("Time to read all files: ", (end - start) / 60, "minutes")
-        print(f"Successfully processed {len(data)} rows from {len(files[''])} files")
         
         # close the Dask client
         client.close()
@@ -304,7 +304,7 @@ class VODProcessor:
         return None
     
     
-    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, max_workers=15, overwrite=False,
+    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, overwrite=False,
                         **kwargs):
         """
         Calculate VOD anomalies with multiple parameter combinations in parallel.
@@ -333,21 +333,15 @@ class VODProcessor:
         
         # Transform all parameters to lists if they are not already
         if not isinstance(angular_resolution, list):
-            angular_resolution = [angular_resolution]
+            raise ValueError("angular_resolution must be a list of values")
         if not isinstance(angular_cutoff, list):
-            angular_cutoff = [angular_cutoff]
+            raise ValueError("angular_cutoff must be a list of values")
         if not isinstance(temporal_resolution, list):
-            temporal_resolution = [temporal_resolution]
+            raise ValueError("temporal_resolution must be a list of values")
             
         # Store anomaly parameters for metadata
-        self.anomaly_params = {
-            "angular_resolution": angular_resolution,
-            "angular_cutoff": angular_cutoff,
-            "temporal_resolution": temporal_resolution,
-            "max_workers": max_workers,
-            "overwrite": overwrite
-        }
-        self.anomaly_params.update(kwargs)
+        self.anomaly_params = kwargs.copy()
+        self.anomaly_params.update({"band_ids": self.band_ids})
 
         print("++++++++++++++++++++++++++++++++")
         print(f"Processing VOD data for {self.station} with "
@@ -364,10 +358,11 @@ class VODProcessor:
         for ar in angular_resolution:
             for ac in angular_cutoff:
                 for tr in temporal_resolution:
-                    # Create filename for this parameter combination
                     # Extract year and month from time interval for compact representation
                     filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
                     file_path = self.temp_dir / filename
+                    
+                    print(f"Interval: {self.time_interval}, ")
                     # Check if file exists and overwrite flag
                     if file_path.exists() and not overwrite:
                         print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
@@ -375,14 +370,15 @@ class VODProcessor:
                     else:
                         # Process this parameter combination immediately
                         print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
-                        params = {
+                        params = self.anomaly_params.copy()
+                        currrent_updates = {
                             'angular_resolution': ar,
                             'angular_cutoff': ac,
                             'temporal_resolution': tr,
                             'vod_anomaly_filename': filename,
                         }
                         # Update with kwargs
-                        params.update(kwargs)
+                        params.update(currrent_updates)
                         
                         # Process the parameter combination directly
                         result = self._run_parameter_combination(params)
@@ -579,8 +575,7 @@ class VODProcessor:
         Process a single parameter combination and save results to disk.
         """
         try:
-            print(f"Processing combination: {params}")
-            
+            print(f"Processing parameter combination: {params}")
             # Load VOD data from disk for this process
             temp_dir = DATA / 'temp'
             anomaly_file_path = temp_dir / params['vod_anomaly_filename']
@@ -602,19 +597,9 @@ class VODProcessor:
             print("Adding CellID to VOD data...")
             vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)  # Drop position without data
             
-            # Calculate anomalies using memory-efficient approach
-            anomaly_params = {
-                "band_ids": self.band_ids,
-                "time_chunk_size": 500,  # Process 500 time steps at once
-                "sv_batch_size": 5,  # Process 5 satellites at once
-                "memory_limit": "4GB"  # Limit memory usage
-            }
-            # Update with params
-            anomaly_params.update(params)
-            
             # Calculate anomalies (now accepts pandas DataFrame directly)
             print("Calculating anomalies...")
-            vod_ts_combined, vod_avg = calculate_anomaly(vod=vod_with_cells, **anomaly_params)
+            vod_ts_combined, vod_avg = calculate_anomaly(vod=vod_with_cells, **params)
             
             # Add parameter columns
             vod_ts_combined['angular_resolution'] = params['angular_resolution']
@@ -624,6 +609,8 @@ class VODProcessor:
             # Save to disk
             vod_ts_combined.to_pickle(anomaly_file_path)
             print(f"Saved anomaly results to {anomaly_file_path}")
+            
+            # todo: write out vod_avg here!
             
             return str(anomaly_file_path)
         

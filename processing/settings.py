@@ -5,15 +5,11 @@ import pandas as pd
 from matplotlib import rcParams
 
 from gnssvod.geodesy.coordinate import ell2cart
+from processing.helper import create_time_intervals
 
-# -----------------------------------q
-# set default matplotlib settings figsize 5,3
-rcParams['figure.figsize'] = (4,4)
-# set tight layout as default
-rcParams['figure.autolayout'] = True
-# standard point size is 3
-rcParams['lines.markersize'] = .5
-
+"""
+THESE SETTINGS ARE USED FOR USING ONE SITE AND ONE ANTENNA PAIR
+"""
 
 # -----------------------------------
 # SETTINGS (user) - general
@@ -48,6 +44,11 @@ binex2rinex_driver = "teqc"  # or "convbin"
 single_station_to_be_preprocessed = ground_station  # or tower_station
 save_orbit = True  # save orbit files
 
+# what variables should be kept
+keepvars = ['S?', 'S??']
+moflux_coordinates = {"lat": 38.7441, "lon": 360 - 92.2, "h": 219}
+pos = ell2cart(**moflux_coordinates)
+
 # -----------------------------------
 # SETTINGS (user) – 02_gather_stations.py
 
@@ -59,57 +60,74 @@ timeintervals_closed = 'left'
 # SETTINGS (user) – 03_export_vod.py
 
 # general settings
-batch_run = False  # run all years in batch mode
-iterate_parameters = False  # set to True to iterate over parameters
-plot = True  # I think this option is dead
+batch_run = True  # run all years in batch mode
+time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
+
+# set to True to iterate over parameters (angular_resolution, angular_cutoff, temporal_resolution)
+iterate_parameters = False
+
+# quick plot of the results
+plot_results = True
 overwrite_vod_processing = False  # overwrite existing VOD processing files
 overwrite_anomaly_processing = True  # overwrite existing anomaly processing files
 add_sbas_position_manually = True  # add SBAS position to VOD files
 
 # todo: settings on constellation
 
-# parameters
+# parameters, L5 currently not really implemented, but should work when debugged
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-single_file_interval = ('2023-04-15', "2023-09-30")
+single_file_interval = ('2023-04-15', "2023-04-30")
 visualization_timezone = "etc/GMT+6"
 
 # for ke calculation:
 canopy_height = 20.0  # meters
 z0 = 1.0  # height of the ground receiver
+make_ke = True  # whether to calculate ke
 
-# for VOD calculation
-angular_resolution = [1]  # degrees
-temporal_resolution = [10]  # minutes  # change from 30
+# for VOD calculation (must be lists)
+angular_resolution = [2]  # degrees
+temporal_resolution = [30]  # minutes  # change from 30
 angular_cutoff = [30] # changed from 30
-# agg_func = "mean"  # or "median"
+agg_fun_vodoffset = "median"  # aggregation function for VOD offset added to the anomaly, can be "mean" or "median"
+agg_fun_ts = "median"   # aggregation function for time series
+agg_fun_satincell = "median"  # Konstantin's aggregation function for satellite in cell, can be "mean" or "median"
+eval_num_obs_tps = True
 
-gnss_parameters = {
+gnss_parameters_iteratable = {
     'angular_resolution': angular_resolution,  # must be a list
     'angular_cutoff': angular_cutoff,
     'temporal_resolution': temporal_resolution,
-    'make_ke': True,  # whether to calculate ke
+}
+
+gnss_parameters = {
+    'make_ke': make_ke,  # whether to calculate ke
     'canopy_height': canopy_height,
     'z0': z0,
     'overwrite': overwrite_anomaly_processing,  # overwrite existing VOD processing files
+    "agg_fun_vodoffset": agg_fun_vodoffset,
+    "agg_fun_ts": agg_fun_ts,  # aggregation function for time series
+    "agg_fun_satincell": agg_fun_satincell,  # Konstantin's aggregation function for satellite in cell
+    "eval_num_obs_tps": eval_num_obs_tps,  # whether to evaluate number of observations for TPS
 }
 
 # ALWAYS CALC BOTH
 # anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
-time_intervals = [
-    ('2022-04-03', '2022-12-31'),
-    ('2023-01-01', '2023-06-30'),
-    ('2023-07-01', '2023-12-31'),
-    ('2024-01-01', '2024-06-30'),
-    ('2024-07-01', '2024-12-31'),
-    ('2025-01-01', '2025-05-19'),
-]
 
 # -----------------------------------
 # SETTINGS (user) – 04_merge_years.py
 
+# settings for merging years (these criteria must match all datasets)
+angular_resolution = 2
+temporal_resolution = 30
+angular_cutoff = 30
+
 # multiparameter (iterate_parameters)?
-multiple_parameters = True  # set to True to iterate over parameters
+multiple_parameters = False  # set to True to iterate over parameters
+
+# VOD "optimized" settings
+minimum_nsat = 13  # minimum number of satellites in view on average in a time interval to be considered valid
+min_vod_quantile = 0.05  # cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
@@ -136,6 +154,7 @@ final_vod_path = "combined_vod_data_MOz_2022_to_2025.csv"
 # settings (static)
 # -----------------------------------
 
+# todo: redo based on create_time_intervals
 # search pattern needs to be glob-compatible
 all_per_year = f"SEPT???[a-z].{year % 100:02d}"
 one_day = f"SEPT{doy:03d}[a-z].{year % 100:02d}"
@@ -181,15 +200,34 @@ search_horizont = {
         "all_time": all_time_gather,
     }
 }
-# what variables should be kept
-keepvars = ['S?', 'S??']
 
-# non-sane coords
-moflux_coordinates = {"lat": 38.7441,
-                      "lon": 360 - 92.2,
-                      "h": 219}
-pos = ell2cart(**moflux_coordinates)
+# -----------------------------------
+# SBAS Identifiers
+# note that the position of the satellite for now need to be manually looked up...
 
-
-
-
+sbas_ident = {
+    "S31": {
+        "system": "WAAS",
+        "Azimuth": 216.5-360,  # Adjusted for azimuth range [-180, 180]
+        "Elevation": 31.1,
+        "PRN": "131",
+    },
+    "S33": {
+        "system": "WAAS",
+        "Azimuth": 230.3-360,
+        "Elevation": 38.3,
+        "PRN": "133",
+    },
+    "S35": {
+        "system": "WAAS",
+        "Azimuth": 225.8-360,
+        "Elevation": 33.7,
+        "PRN": "135",
+    },
+    "S48": {
+        "system": "Algerian SBAS",
+        "Azimuth": 104.6,
+        "Elevation": 8.9,  # too low!
+        "PRN": "148",
+    },
+}

@@ -1,6 +1,85 @@
 # Scrapbook for task within `gnssvod`
 
-## 6/7/25
+## 6/9/25
+
+- Calculation of bins now band-specific
+- Change in standard time series aggregation from `mean` to `median` (more robust)
+- Change in calculation of average VOD per tps cell from `mean` to `median` (more robust?)
+- Change in calculation of average overall VOD from `mean` to `median` (more robust)
+- Tradeoff between time interval, angular neigborhood, and number of satellites
+  - time interval higher
+  - angular neighborhood higher
+      –> more satellites
+
+New variable in anomaly processing: `n`:
+  - Median number of observations per tps-unit per time interval
+
+## 6/8/25
+
+Rationale VOD optimized:
+
+---------
+
+    Goals:
+    1. Best long-term vod estimate
+    2. Best weekly vod (dry-down)
+    3. Best diurnal vod (daily)
+
+    Manufacture signal by
+    VOD = 1 + 2 + 3
+
+    -----
+    1. Best long-term vod estimate
+        - Fullest canopy view of high-credibility constellations:
+        - Includes canopy gaps to
+
+        Tests:
+        * compare with literature VOD values
+
+        Candidates:
+        * mean (VOD(GPS, GLONASS)), θ > 30°
+
+    -----
+    2. Best weekly vod (dry-down)
+        - Usually not diurnal trend
+        - Precipitation events
+        - Trend
+
+        Tests:
+        * compare with radiometer
+        * compare with branch water potential
+
+        Candidates:
+        * SBAS (33 > 35 > [31]*excluded) –> all or mixture?
+
+        Todo:
+        - normalize magnitude to VOD1_anom magnitude
+
+    -----
+    3. Best diurnal vod (daily)
+        - Strong diurnal vars don't show seasonal trend and precipitation (but dew)
+
+        Tests:
+        * compare with branch water potential
+        * independent of temperature?
+
+        Candidates:
+        * VOD1_anom_highbiomass (VOD1_anom_bin2, VOD1_anom_bin3, VOD1_anom_bin4) (60% of high biomass)
+            - does not show strong seasonal trend
+            - does not show precipitation events
+
+        Todo:
+        * heavy smoothing (savitzky-golay filter)
+        * detrending (lowess filter) –> the overall dynamics are reduce...
+
+
+
+    Sbas:
+    - Why are stripes in S31 ref? is the WAAS sat moving? However, not seen in VOD :)
+
+    Claude 3.7 Sonnet Thinking:
+    I want you to do the following analysis. I want to create an optimal VOD estimator variable that harnesses the different strength of signales (cols) as desribed in  the underneat text. Please 1)  Characterize Precipitation patterns using temperal anomalies in VOD1_anom (create a flag based on the quantile of upper 10% of the signal). Mask anom by the flag. Calculate mean daily VOD values (transform not summarize) and add to vod_ts. 2) use the SBAS data to characterize the weekly trends (dry-down events). First, subtract the mean of each VOD1_S?? band from the time series, then caluculate the mean VOD1_S. 3) The best diurnal VOD descriptor is VOD1_anom_highbiomass. Please apply a window-size (6 hours, polyorder 2) savitzky-golay filter to the data. Finally merge all three product to a new dataframe and add a new column where all of the them are added
+------
 
 This flowchart illustrates:
 1. The three input data sources

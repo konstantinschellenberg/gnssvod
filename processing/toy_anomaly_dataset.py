@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from analysis.calculate_anomalies import calculate_anomaly, ke_fun
+from analysis.calculate_anomaly_functions import ke_fun
+from analysis.calculate_anomalies import calculate_anomaly
 import gnssvod as gv
 from processing.export_vod_funs import plot_hemi
 from processing.settings import *

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from definitions import FIG
-from processing.settings import single_file_interval, visualization_timezone
+from processing.metadata import create_vod_metadata
 import matplotlib.pyplot as plt
 
 
@@ -202,7 +202,6 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import matplotlib.dates as mdates
     from matplotlib.ticker import FuncFormatter
 
     # Make a copy to avoid modifying the original
@@ -1210,7 +1209,6 @@ def plot_vod_by_author(df, author, save_dir=None):
         The created figure
     """
     import matplotlib.pyplot as plt
-    import numpy as np
     import pandas as pd
     from pathlib import Path
     
@@ -1263,7 +1261,7 @@ def plot_vod_by_author(df, author, save_dir=None):
         ax.set_title("VOD1 Anomaly (Yitong style)")
         
         # Format x-axis
-        from matplotlib.dates import MonthLocator, YearLocator, DateFormatter
+        from matplotlib.dates import MonthLocator, DateFormatter
         ax.xaxis.set_major_locator(MonthLocator(interval=2))
         ax.xaxis.set_major_formatter(DateFormatter('%Y-%m'))
         # rotate x-tick labels
@@ -1393,7 +1391,6 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     """
     import matplotlib.pyplot as plt
     import numpy as np
-    from pathlib import Path
     
     # Process kwargs
     alpha = kwargs.get('alpha', 0.7)
@@ -1500,3 +1497,479 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     
     plt.show()
     return fig
+
+
+def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
+                               min_hours_per_day=12, **kwargs):
+    """
+    Characterize precipitation patterns and calculate daily mean VOD values.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD time series
+    dataset_col : str
+        Column name for the dataset to use for precipitation detection
+    precip_quantile : float
+        Quantile threshold for precipitation event detection (0-1)
+    min_hours_per_day : int
+        Minimum hours of data required per day for valid mean calculation
+
+    Returns:
+    --------
+    pandas.DataFrame
+        New columns: 'precip_flag', 'VOD1_anom_masked', 'VOD1_daily'
+    """
+    result = pd.DataFrame(index=df.index)
+    
+    # Create flag for upper quantile (precipitation events)
+    precip_threshold = df[dataset_col].quantile(precip_quantile)
+    result['precip_flag'] = (df[dataset_col] > precip_threshold).astype(int)
+    
+    # Mask anomalies during precipitation events
+    result['VOD1_anom_masked'] = df[dataset_col].copy()
+    result.loc[result['precip_flag'] == 1, 'VOD1_anom_masked'] = np.nan
+    
+    # Calculate required samples based on data frequency
+    time_delta = df.index[1] - df.index[0]
+    min_samples_per_day = min_hours_per_day * (3600 / pd.Timedelta(time_delta).total_seconds())
+    
+    # Calculate daily mean VOD
+    daily_counts = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).count()
+    daily_means = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).mean()
+    
+    # Identify days with insufficient data
+    insufficient_days = daily_counts < min_samples_per_day
+    daily_means[insufficient_days] = np.nan
+    
+    # Interpolate values for days with insufficient data
+    interpolated_daily = daily_means.interpolate(method='linear', limit=5)
+    
+    # Reindex back to original timestamp frequency
+    result['VOD1_daily'] = interpolated_daily.reindex(df.index, method='ffill')
+    
+    # Add mean VOD1 value if available
+    if 'VOD1' in df.columns:
+        result['VOD1_daily'] = result['VOD1_daily'] + df['VOD1'].mean()
+    
+    return result
+
+
+def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], **kwargs):
+    """
+    Characterize weekly trends using SBAS data.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD time series
+    sbas_bands : list
+        List of SBAS band column names to use
+
+    Returns:
+    --------
+    pandas.DataFrame
+        New columns: normalized bands and 'VOD1_S_weekly'
+    """
+    result = pd.DataFrame(index=df.index)
+    normalized_bands = []
+    
+    # Normalize each SBAS band by subtracting its mean
+    for band in sbas_bands:
+        if band in df.columns:
+            band_mean = df[band].mean()
+            normalized_band = f"{band}_norm"
+            result[normalized_band] = df[band] - band_mean
+            normalized_bands.append(normalized_band)
+    
+    # Calculate mean of normalized SBAS bands for weekly trends
+    if normalized_bands:
+        result['VOD1_S_weekly'] = result[normalized_bands].mean(axis=1)
+    else:
+        result['VOD1_S_weekly'] = np.nan
+    
+    return result
+
+
+def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
+                        window_hours=6, polyorder=2, apply_loess=True,
+                        loess_frac=0.1, **kwargs):
+    """
+    Process diurnal VOD descriptor with Savitzky-Golay filter and optional LOESS detrending.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD time series
+    diurnal_col : str
+        Column name for the diurnal VOD descriptor
+    window_hours : int
+        Window size in hours for Savitzky-Golay filter
+    polyorder : int
+        Polynomial order for Savitzky-Golay filter
+    apply_loess : bool
+        Whether to apply LOESS detrending
+    loess_frac : float
+        Fraction of data used for LOESS smoothing
+
+    Returns:
+    --------
+    pandas.DataFrame
+        New column: 'VOD1_diurnal'
+    """
+    result = pd.DataFrame(index=df.index)
+    
+    if diurnal_col in df.columns:
+        # Convert to numpy array for filtering, replacing NaNs with interpolation
+        diurnal_data = df[diurnal_col].copy()
+        
+        # For any NaNs, fall back to hourly means
+        hourly_means = diurnal_data.groupby(df.index.hour).mean()
+        for hour, mean_value in hourly_means.items():
+            hour_mask = (df.index.hour == hour) & diurnal_data.isna()
+            diurnal_data.loc[hour_mask] = mean_value
+        
+        # For any remaining NaNs, use linear interpolation
+        diurnal_data = diurnal_data.interpolate(method='linear', limit=6)
+        
+        # Determine window length based on data frequency
+        freq_minutes = pd.Timedelta(df.index[1] - df.index[0]).total_seconds() / 60
+        window_length = int(window_hours * 60 / freq_minutes)
+        
+        # Make window length odd (required by savgol_filter)
+        window_length = window_length + 1 if window_length % 2 == 0 else window_length
+        
+        # Apply Savitzky-Golay filter
+        from scipy.signal import savgol_filter
+        filtered_values = savgol_filter(
+            diurnal_data.ffill().bfill().values,
+            window_length,
+            polyorder=polyorder
+        )
+        
+        if apply_loess:
+            from statsmodels.nonparametric.smoothers_lowess import lowess
+            # Apply LOWESS to detrend the filtered values
+            lowess_smoothed = lowess(filtered_values, df.index, frac=loess_frac, it=0)
+            # Subtract the LOWESS smoothed values from the filtered values
+            filtered_values = filtered_values - lowess_smoothed[:, 1]
+        
+        # Add filtered diurnal signal
+        result['VOD1_diurnal'] = pd.Series(filtered_values, index=df.index)
+    else:
+        result['VOD1_diurnal'] = np.nan
+    
+    return result
+
+
+def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_weekly',
+                             diurnal_col='VOD1_diurnal', methods=['add', 'mult', 'weighted', 'zscore'],
+                             weights={'weekly_trend': 0.3, 'diurnal': 0.4}, **kwargs):
+    """
+    Create combined optimal VOD estimators using different arithmetic methods.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD components
+    trend_col : str
+        Column name for the trend component
+    weekly_col : str
+        Column name for the weekly trend component
+    diurnal_col : str
+        Column name for the diurnal component
+    methods : list
+        List of methods to use ['add', 'mult', 'weighted', 'zscore']
+    weights : dict
+        Weights for the weighted mean method
+
+    Returns:
+    --------
+    pandas.DataFrame
+        New columns: Component columns and different VOD_optimal methods
+    """
+    result = pd.DataFrame(index=df.index)
+    
+    # Copy component columns with standard names
+    result['trend'] = df[trend_col]
+    result['weekly_trend'] = df[weekly_col]
+    result['diurnal'] = df[diurnal_col]
+    
+    # 1. Simple addition method
+    if 'add' in methods:
+        result['VOD_optimal_add'] = (
+                result['weekly_trend'].fillna(0) +
+                result['diurnal'].fillna(0) +
+                result['trend']
+        )
+    
+    # 2. Multiplication method
+    if 'mult' in methods:
+        result['VOD_optimal_mult'] = (
+                result['weekly_trend'].fillna(1) *
+                result['diurnal'].fillna(1) +
+                result['trend']
+        )
+    
+    # 3. Weighted mean method
+    if 'weighted' in methods:
+        weighted_sum = (
+                result['weekly_trend'].fillna(0) * weights['weekly_trend'] +
+                result['diurnal'].fillna(0) * weights['diurnal']
+        )
+        result['VOD_optimal_weighted'] = weighted_sum + result['trend']
+    
+    # 4. Z-score transformation method
+    if 'zscore' in methods:
+        components = ['weekly_trend', 'diurnal']
+        z_transformed = {}
+        means = {}
+        stds = {}
+        
+        for component in components:
+            data = result[component].dropna()
+            if len(data) > 0:
+                means[component] = data.mean()
+                stds[component] = data.std()
+                z_transformed[component] = (result[component] - means[component]) / stds[component]
+            else:
+                z_transformed[component] = pd.Series(0, index=result.index)
+                means[component] = 0
+                stds[component] = 1
+        
+        # Sum the z-transformed components
+        z_sum = (
+                z_transformed['weekly_trend'].fillna(0) +
+                z_transformed['diurnal'].fillna(0)
+        )
+        
+        # Calculate average of means and stds for back-transformation
+        avg_mean = sum(means.values()) / len(means)
+        avg_std = sum(stds.values()) / len(stds)
+        
+        # Back-transform to original scale
+        result['VOD_optimal_zscore'] = z_sum * avg_std + avg_mean + result['trend']
+    
+    # Set the default VOD_optimal to the z-score method if available
+    if 'zscore' in methods:
+        result['VOD_optimal'] = result['VOD_optimal_zscore']
+    elif 'add' in methods:
+        result['VOD_optimal'] = result['VOD_optimal_add']
+    
+    return result
+
+
+def create_satellite_mask(df, min_satellites=13, satellite_col='Ns_t', **kwargs):
+    """
+    Create a mask based on minimum number of satellites.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with satellite count data
+    min_satellites : int
+        Minimum number of satellites required
+    satellite_col : str
+        Column name containing satellite count data
+
+    Returns:
+    --------
+    pandas.Series
+        Boolean mask where True means the row meets the satellite count requirement
+    """
+    if satellite_col not in df.columns:
+        print(f"Warning: Satellite column '{satellite_col}' not found in the dataframe")
+        return pd.Series(True, index=df.index)  # Default to no masking
+    
+    return df[satellite_col] >= min_satellites
+
+
+def create_vod_percentile_mask(df, vod_column='VOD1_anom', min_percentile=0.05, **kwargs):
+    """
+    Create a mask based on VOD value percentile.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD data
+    vod_column : str
+        Column name for the VOD data to use for percentile filtering
+    min_percentile : float
+        Minimum percentile threshold (0-1)
+
+    Returns:
+    --------
+    pandas.Series
+        Boolean mask where True means the row meets the percentile requirement
+    """
+    if vod_column not in df.columns:
+        print(f"Warning: VOD column '{vod_column}' not found in the dataframe")
+        return pd.Series(True, index=df.index)  # Default to no masking
+    
+    # Calculate the percentile threshold
+    percentile_threshold = df[vod_column].quantile(min_percentile)
+    
+    # Create the mask
+    return df[vod_column] >= percentile_threshold
+
+
+def identify_column_types(column_name):
+    """Identify the type and attributes of a VOD column based on its name pattern.
+
+    Args:
+        column_name: Name of the column to analyze
+
+    Returns:
+        Dictionary with column attributes (data_type, band, algorithm, satellite, etc.)
+    """
+    import re
+    
+    # Initialize attributes dictionary
+    attrs = {
+        'data_type': None,
+        'band': None,
+        'algorithm': None,
+        'satellite': None,
+        'bin': None,
+        'constellation': None
+    }
+    
+    # Extract band information (if available)
+    band_match = re.search(r'VOD(\d)', column_name)
+    if band_match:
+        attrs['band'] = int(band_match.group(1))
+    
+    # Identify data type
+    if 'anom' in column_name:
+        if 'bin' in column_name:
+            attrs['data_type'] = 'binned anom'
+            # Extract bin number
+            bin_match = re.search(r'bin(\d)', column_name)
+            if bin_match:
+                attrs['bin'] = int(bin_match.group(1))
+        else:
+            attrs['data_type'] = 'anom'
+    elif column_name in ['hod', 'doy', 'year', 'angular_resolution', 'angular_cutoff', 'temporal_resolution',
+                         'Ns_t', 'SD_Ns_t', 'C_t_perc']:
+        attrs['data_type'] = 'metric'
+    elif 'ref' in column_name:
+        attrs['data_type'] = 'reference'
+    elif 'grn' in column_name:
+        attrs['data_type'] = 'ground'
+    elif column_name.startswith('VOD') and len(column_name) <= 4:
+        attrs['data_type'] = 'raw'
+    
+    # Identify algorithm
+    if '_ke' in column_name:
+        attrs['algorithm'] = 'ke'
+    elif '_tp' in column_name:
+        attrs['algorithm'] = 'tp'
+    
+    # Identify satellite/constellation
+    if 'gps+gal' in column_name:
+        attrs['constellation'] = 'GPS+Galileo'
+    elif '_gps' in column_name:
+        attrs['constellation'] = 'GPS'
+    elif any(sat in column_name for sat in ['S31', 'S33', 'S35']):
+        attrs['data_type'] = 'raw' if not attrs['data_type'] else attrs['data_type']
+        for sat in ['S31', 'S33', 'S35']:
+            if sat in column_name:
+                attrs['satellite'] = sat
+                break
+        attrs['constellation'] = 'SBAS'
+    elif column_name.endswith('_S'):
+        attrs['constellation'] = 'SBAS'
+        attrs['data_type'] = 'mean'
+    else:
+        attrs['constellation'] = 'all'
+    
+    return attrs
+
+
+def mask(nsat_mask, percvod_mask):
+    """Combine satellite mask and VOD percentile mask.
+
+    Args:
+        nsat_mask: Boolean mask for filtering based on satellite count
+        percvod_mask: Boolean mask for filtering based on VOD percentile
+
+    Returns:
+        Combined boolean mask
+    """
+    return nsat_mask & percvod_mask
+
+
+def filter_vod_columns(df, column_type=None, band=None, algorithm=None,
+                       constellation=None, satellite=None, is_binned=None,
+                       exclude_metrics=True, exclude_sbas=False):
+    """Filter VOD columns based on specified criteria.
+
+    Args:
+        df: DataFrame containing VOD columns
+        column_type: Filter by column type (e.g., 'anom', 'raw', 'binned anom')
+        band: Filter by band number (1, 2, 3, 4)
+        algorithm: Filter by algorithm (e.g., 'ke', 'tp')
+        constellation: Filter by constellation (e.g., 'GPS', 'GPS+Galileo', 'SBAS')
+        satellite: Filter by specific satellite (e.g., 'S31', 'S33')
+        is_binned: Filter for binned columns (True) or non-binned columns (False)
+        exclude_metrics: Whether to exclude metric columns
+        exclude_sbas: Whether to exclude SBAS-related columns
+
+    Returns:
+        List of column names that match the criteria
+    """
+    # Get metadata for all columns
+    metadata = create_vod_metadata()
+    
+    # For columns in df that aren't in metadata, identify their types
+    for col in df.columns:
+        if col not in metadata.index:
+            attrs = identify_column_types(col)
+            # Add to metadata temporarily (without modifying the original)
+            metadata.loc[col] = [attrs['data_type'], attrs['algorithm'], '',
+                                 attrs['band'], attrs['satellite'], attrs['bin'],
+                                 attrs['constellation']]
+    
+    # Start with all columns
+    filtered_cols = df.columns.tolist()
+    
+    # Apply filters based on arguments
+    if column_type:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'data_type'] == column_type]
+    
+    if band is not None:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'band'] == band]
+    
+    if algorithm:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'algorithm'] == algorithm]
+    
+    if constellation:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'constellation'] == constellation]
+    
+    if satellite:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'satellite'] == satellite]
+    
+    if is_binned is not None:
+        if is_binned:
+            filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                             'bin' in metadata.loc[col, 'data_type']]
+        else:
+            filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                             'bin' not in metadata.loc[col, 'data_type']]
+    
+    # Handle exclusions
+    if exclude_metrics:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'data_type'] != 'metric']
+    
+    if exclude_sbas:
+        filtered_cols = [col for col in filtered_cols if col in metadata.index and
+                         metadata.loc[col, 'constellation'] != 'SBAS' and
+                         metadata.loc[col, 'satellite'] is None]
+    
+    return filtered_cols

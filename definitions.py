@@ -11,9 +11,11 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent / "gnssvod"))
 
 rcParams['figure.figsize'] = 7, 5
+rcParams['figure.autolayout'] = True
+rcParams['lines.markersize'] = .5
 rcParams['figure.dpi'] = 300
-plt.style.use('seaborn-v0_8-whitegrid')
 
+plt.style.use('seaborn-v0_8-whitegrid')
 pd.set_option('display.max_columns', None)
 
 def get_repo_root() -> Path:
