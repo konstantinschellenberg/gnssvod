@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from definitions import FIG
 from processing.metadata import create_vod_metadata
 import matplotlib.pyplot as plt
+
+from processing.settings import filepath_environmentaldata, visualization_timezone
 
 
 def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
@@ -54,19 +57,17 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     # Make a copy to avoid modifying the original
     df = df.copy()
     
-    # Ensure 'hod' is in the dataframe
-    if 'hod' not in df.columns:
-        # Try to extract hour from index if it's a datetime
+    # transform timezone to visualization timezone
+    if visualization_timezone:
         if isinstance(df.index, pd.DatetimeIndex):
-            df['hod'] = df.index.hour
+            # Convert index to visualization timezone
+            df.index = df.index.tz_convert(visualization_timezone)
         else:
-            # Try to find a datetime column
-            datetime_cols = [col for col in df.columns if 'datetime' in col.lower()]
-            if datetime_cols and pd.api.types.is_datetime64_any_dtype(df[datetime_cols[0]]):
-                df['hod'] = df[datetime_cols[0]].dt.hour
-            else:
-                raise ValueError("DataFrame must contain 'hod' column or have a datetime index")
+            raise ValueError("DataFrame index must be a DatetimeIndex to convert timezone")
     
+    # Ensure 'hod' is in the dataframe
+    df['hod'] = df.index.hour
+
     # Validate normalization parameter
     valid_normalizations = ['daily', 'zscore', None]
     if normalize not in valid_normalizations:
@@ -131,11 +132,14 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
             ax.plot(hourly_data['hod'], hourly_data['mean'],
                     label=var, color=color, linewidth=2)
             
-            # Plot standard deviation band
-            ax.fill_between(hourly_data['hod'],
-                            hourly_data['mean'] - hourly_data['std'],
-                            hourly_data['mean'] + hourly_data['std'],
-                            color=color, alpha=0.2)
+            
+            show_std = kwargs.get('show_std', True)
+            if show_std:
+                # Plot standard deviation band
+                ax.fill_between(hourly_data['hod'],
+                                hourly_data['mean'] - hourly_data['std'],
+                                hourly_data['mean'] + hourly_data['std'],
+                                color=color, alpha=0.2)
         
         # Set labels and title for subplot
         ax.set_xlabel('Hour of Day')
@@ -169,29 +173,26 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     plt.show()
     return fig
 
-def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", scaling=99, hue_limit=None, **kwargs):
+
+def plot_vod_fingerprint(df, vars, figsize=(3, 6), title=None, cmap="viridis", scaling=99, hue_limit=None, **kwargs):
     """
-    Create fingerprint plots showing VOD data as heatmaps with time of day (x-axis)
+    Create fingerprint plot showing VOD data as heatmap with time of day (x-axis)
     and day of year (y-axis).
 
     Parameters
     ----------
     df : pandas.DataFrame
         VOD time series data with datetime index
-    vars : str, list of str, list of tuples, or list of lists of tuples
-        Variable(s) to plot:
-        - str: Single variable
-        - list of str: Multiple variables in separate plots
-        - list of tuples: Variables grouped in rows (tuple members in same row)
-        - list of lists of tuples: Complex grouping (list members in new rows)
-    figsize : tuple, optional
-        Figure size (width, height) in inches. Auto-calculated if None.
+    vars : str
+        Variable name to plot
+    figsize : tuple, default=(8, 8)
+        Figure size (width, height) in inches
     title : str, optional
         Plot title
     cmap : str, default="viridis"
         Colormap to use for the heatmap
     scaling : int, default=99
-        Percentile (1-100) to cap color scale.
+        Percentile (1-100) to cap color scale
     hue_limit : tuple, optional
         Manual (min, max) color scale limits. Overrides scaling.
 
@@ -204,234 +205,113 @@ def plot_vod_fingerprint(df, vars, figsize=None, title=None, cmap="viridis", sca
     import numpy as np
     import pandas as pd
     from matplotlib.ticker import FuncFormatter
-
+    import matplotlib as mpl
+    
     # Make a copy to avoid modifying the original
     df = df.copy()
     
+    # fill nans with -9999
+    df.fillna(-9999, inplace=True)
+    
     save_dir = kwargs.get('save_dir', FIG)
-
-    # Extract time of day as decimal hours (preserving native resolution)
+    show = kwargs.get('show', True)
+    
+    # Ensure vars is a string (single variable)
+    if not isinstance(vars, str):
+        raise ValueError("This simplified version only supports a single variable name as string")
+    
+    # Extract time of day and day of year from datetime index
     if isinstance(df.index, pd.DatetimeIndex):
-        # Calculate time of day as a decimal (hour + minute/60 + second/3600)
-        df['tod'] = df.index.hour + df.index.minute/60 + df.index.second/3600
+        df['tod'] = df.index.hour + df.index.minute / 60 + df.index.second / 3600
         df['doy'] = df.index.dayofyear
         df['year'] = df.index.year
     elif 'datetime' in df.columns and pd.api.types.is_datetime64_any_dtype(df['datetime']):
-        df['tod'] = df['datetime'].dt.hour + df['datetime'].dt.minute/60 + df['datetime'].dt.second/3600
+        df['tod'] = df['datetime'].dt.hour + df['datetime'].dt.minute / 60 + df['datetime'].dt.second / 3600
         df['doy'] = df['datetime'].dt.dayofyear
         df['year'] = df['datetime'].dt.year
-    elif 'hod' in df.columns and 'doy' in df.columns and 'year' in df.columns:
-        # Convert hour of day to time of day if minutes/seconds not available
+    elif 'hod' in df.columns and 'doy' in df.columns:
         if 'minute' in df.columns:
-            df['tod'] = df['hod'] + df['minute']/60
+            df['tod'] = df['hod'] + df['minute'] / 60
             if 'second' in df.columns:
-                df['tod'] += df['second']/3600
+                df['tod'] += df['second'] / 3600
         else:
             df['tod'] = df['hod']
     else:
         raise ValueError("DataFrame must contain datetime index or columns for time calculation")
-
-    # Normalize the variable structure to list of lists of tuples for unified processing
-    if isinstance(vars, str):
-        # Single variable
-        vars = [[(vars,)]]
-    elif isinstance(vars, list):
-        if all(isinstance(v, str) for v in vars):
-            # List of variables
-            vars = [[(v,)] for v in vars]
-        elif all(isinstance(v, tuple) for v in vars):
-            # List of tuples
-            vars = [vars]
-        elif all(isinstance(v, list) for v in vars):
-            # Already list of lists - validate that all items are tuples
-            for i, row in enumerate(vars):
-                if not all(isinstance(v, tuple) for v in row):
-                    vars[i] = [(v,) if isinstance(v, str) else v for v in row]
-        else:
-            # Mixed list - normalize to tuples
-            vars = [[(v,) if isinstance(v, str) else v for v in vars]]
-
-    # Calculate rows and columns
-    n_rows = len(vars)
-    n_cols = max(len(row) for row in vars)
-
-    # Auto-calculate figsize if not provided
-    if figsize is None:
-        figsize = (4 * n_cols, 8 * n_rows)
-
-    # Create figure and axes grid
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-
-    # Ensure axes is always a 2D array
-    if n_rows == 1 and n_cols == 1:
-        axes = np.array([[axes]])
-    elif n_rows == 1:
-        axes = np.array([axes])
-    elif n_cols == 1:
-        axes = np.array([[ax] for ax in axes])
-
-    # Flatten all variables to check for global color scaling
-    all_variables = []
-    for row in vars:
-        for var_tuple in row:
-            all_variables.extend(var_tuple)
-
-    # Determine global color scaling if multiple variables and no manual limits
-    use_global_scaling = len(all_variables) > 1 and hue_limit is None
-
-    if use_global_scaling:
-        # Calculate global min/max across all variables
-        all_values = []
-        for var in all_variables:
-            if var in df.columns:
-                all_values.extend(df[var].dropna().values)
-
-        if all_values:
-            lower_percentile = (100 - scaling) / 2
-            upper_percentile = 100 - lower_percentile
-            vmin = np.nanpercentile(all_values, lower_percentile)
-            vmax = np.nanpercentile(all_values, upper_percentile)
-            global_limits = (vmin, vmax)
-
-    # Determine the native temporal resolution of the dataset
-    if len(df['tod'].unique()) > 24:
-        # High-resolution data - check actual resolution
-        tod_diff = np.diff(np.sort(df['tod'].unique()))
-        min_diff = np.min(tod_diff[tod_diff > 0]) if len(tod_diff) > 0 else 1/60
-        resolution_minutes = min_diff * 60
-        high_res = True
+    
+    # Create pivot table
+    
+    # in aggfun, if nan, use np.nanmean
+    def nanmean(x):
+        return np.nanmean(x) if len(x) > 0 else np.nan
+    pivot_table = df.pivot_table(values=vars, index='doy', columns='tod', aggfunc="mean")
+    
+    # set -9999 to nan
+    pivot_table.replace(-9999, np.nan, inplace=True)
+    
+    # Determine color limits
+    if hue_limit is None:
+        # Use percentile scaling
+        lower_percentile = (100 - scaling) / 2
+        upper_percentile = 100 - lower_percentile
+        vmin = np.nanpercentile(pivot_table.values, lower_percentile)
+        vmax = np.nanpercentile(pivot_table.values, upper_percentile)
     else:
-        # Hourly or lower resolution
-        high_res = False
-
-    # Time formatter function for x-axis
-    def time_formatter(x, pos):
-        hours = int(x)
-        minutes = int((x - hours) * 60)
-        if high_res and minutes > 0:
-            return f"{hours:02d}"
-        else:
-            return f"{hours:02d}"
-
-    # Process each variable
-    for i, row in enumerate(vars):
-        for j, var_tuple in enumerate(row):
-            if j >= n_cols:
-                continue  # Skip if beyond the number of columns
-
-            ax = axes[i, j]
-
-            # Skip empty positions
-            if not var_tuple:
-                ax.axis('off')
-                continue
-
-            # Create subplot title from variable names
-            subplot_title = ", ".join(var_tuple)
-
-            # Create a pivot table for each variable in the tuple
-            images = []
-            for k, variable in enumerate(var_tuple):
-                if variable not in df.columns:
-                    print(f"Warning: Variable '{variable}' not found in DataFrame, skipping.")
-                    continue
-
-                # Create pivot table using the native time resolution
-                pivot_data = df.pivot_table(
-                    values=variable,
-                    index=['year', 'doy'],
-                    columns='tod',
-                    aggfunc='mean'
-                )
-
-                # Fill NaNs with 0
-                pivot_data = pivot_data.fillna(0)
-
-                # Make date the index
-                pivot_data.index = pd.to_datetime(
-                    pivot_data.index.get_level_values('year').astype(str) + '-' +
-                    pivot_data.index.get_level_values('doy').astype(str),
-                    format='%Y-%j'
-                )
-
-                # Calculate color limits for this variable
-                if hue_limit:
-                    # Use manual limits
-                    vmin, vmax = hue_limit
-                elif use_global_scaling:
-                    # Use global limits
-                    vmin, vmax = global_limits
-                else:
-                    # Calculate limits for this variable
-                    if scaling < 100:
-                        lower_percentile = (100 - scaling) / 2
-                        upper_percentile = 100 - lower_percentile
-                        vmin = np.nanpercentile(pivot_data.values, lower_percentile)
-                        vmax = np.nanpercentile(pivot_data.values, upper_percentile)
-                    else:
-                        vmin, vmax = None, None
-
-                # Create the heatmap
-                img = ax.pcolormesh(
-                    pivot_data.columns,  # time of day (continuous)
-                    pivot_data.index,    # days
-                    pivot_data.values,
-                    cmap=cmap,
-                    shading='auto',
-                    vmin=vmin,
-                    vmax=vmax
-                )
-                images.append(img)
-
-            # Only add colorbar for the last image (if any images were created)
-            if images:
-                cbar = fig.colorbar(images[-1], ax=ax)
-                cbar.set_label(subplot_title)
-
-            # Flip the y-axis so dates increase downward
-            ax.invert_yaxis()
-
-            # Set labels
-            ax.set_xlabel("Time of Day")
-            ax.set_ylabel("Date")
-            ax.set_title(subplot_title)
-
-            # Set x-axis ticks and formatter based on resolution
-            if high_res:
-                # For high-resolution data, show more detailed time ticks
-                x_ticks = np.arange(0, 24.1, 3)  # Every 3 hours
-                ax.set_xticks(x_ticks)
-                ax.xaxis.set_major_formatter(FuncFormatter(time_formatter))
-            else:
-                # For hourly data, show simple hour marks
-                ax.set_xticks(np.arange(0, 24, 6))
-                ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 24, 6)])
-
-    # Hide unused subplots
-    for i in range(n_rows):
-        for j in range(len(vars[i]), n_cols):
-            axes[i, j].axis('off')
-
-    # Set overall title if provided
+        vmin, vmax = hue_limit
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Get colormap and set NaN values to transparent
+    cmap_obj = plt.cm.get_cmap(cmap).copy()
+    cmap_obj.set_bad(alpha=0)
+    # remove grid
+    ax.grid(False)
+    
+    # Determine data resolution
+    high_res = len(df['tod'].unique()) > 24
+    
+    # Get x and y values for plotting
+    x = pivot_table.columns
+    y = pivot_table.index
+    
+    # Create heatmap using pcolormesh with masked array for NaN values
+    masked_data = np.ma.masked_invalid(pivot_table.values)
+    im = ax.pcolormesh(x, y, masked_data, cmap=cmap_obj, vmin=vmin, vmax=vmax)
+    
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax, orientation="vertical")
+    cbar.set_label(vars)
+    
+    # Flip the y-axis so dates increase downward
+    ax.invert_yaxis()
+    
+    # Set labels
+    ax.set_xlabel("Time of Day")
+    ax.set_ylabel("Day of Year")
+    
+    # Set x-axis ticks and formatter based on resolution
+    if high_res:
+        ax.set_xticks(np.arange(0, 24, 3))
+        ax.set_xlim(0, 24)
+    else:
+        ax.set_xticks(np.arange(0, 24, 3))
+        ax.set_xlim(0, 24)
+    
+    # Set title
     if title:
-        fig.suptitle(title, fontsize=16)
-        plt.subplots_adjust(top=0.92)  # Make room for title
-
-    # Create filename based on variables
-    if isinstance(vars, list) and len(vars) == 1 and isinstance(vars[0], list) and len(vars[0]) == 1:
-        # Single variable case
-        var_str = "_".join(vars[0][0])
+        ax.set_title(title)
     else:
-        # Multiple variables case
-        var_str = "multiple_vars"
-
-    filename = f"vod_fingerprint_{var_str}.png"
+        ax.set_title(f"VOD Fingerprint: {vars}")
+    
+    # Create filename
+    filename = f"vod_fingerprint_{vars}.png"
+    
     plt.tight_layout()
     plt.savefig(save_dir / filename, dpi=300)
-    plt.show()
-
-    return fig
-
+    
+    if show:
+        plt.show()
 
 def plot_vod_timeseries(df, variables, interactive=False, title=None, figsize=(8, 5), **kwargs):
     """
@@ -1235,12 +1115,16 @@ def plot_vod_by_author(df, author, save_dir=None):
         mask = (df.index >= start_date) & (df.index <= end_date)
         data = df[mask].copy()
         
+        # transform tz
+        data.index = data.index.tz_convert(visualization_timezone)
+        
         # Calculate daily average and 95% percentile
-        qq = 95/100
+        # qq = 95/100
+        var_var = "VOD1_anom_tp"
         data['date'] = data.index.date
-        daily_avg = data.groupby('date')['VOD1_anom'].mean()
-        daily_p025 = data.groupby('date')['VOD1_anom'].quantile(1-qq)
-        daily_p975 = data.groupby('date')['VOD1_anom'].quantile(qq)
+        daily_avg = data.groupby('date')[var_var].mean()
+        daily_lower = data.groupby('date')[var_var].quantile(0.05)
+        daily_upper = data.groupby('date')[var_var].quantile(0.95)
         
         # Create figure
         fig, ax = plt.subplots(figsize=(4.3, 2))
@@ -1249,13 +1133,13 @@ def plot_vod_by_author(df, author, save_dir=None):
         dates = [pd.Timestamp(d) for d in daily_avg.index]
         
         # Plot 95% confidence interval
-        ax.fill_between(dates, daily_p025, daily_p975, color='red', alpha=0.2)
+        ax.fill_between(dates, daily_lower, daily_upper, color='red', alpha=0.2)
         
         # Plot daily average
         ax.plot(dates, daily_avg, color='red', linewidth=0.5)
         
         # Set y-limits
-        ax.set_ylim(0.4, 0.9)
+        ax.set_ylim(0.35, 0.85)
         
         # Labels and title
         ax.set_xlabel('Date')
@@ -1291,7 +1175,7 @@ def plot_vod_by_author(df, author, save_dir=None):
         ax.plot(data.index, data['VOD1_anom'], color='black', linewidth=0.4, label='Processed VOD1_anom')
         
         # Set y-limits
-        ax.set_ylim(0.3, 1.0)
+        ax.set_ylim(0.35, 0.9)
         
         # Labels and title
         ax.set_xlabel('Date')
@@ -1503,7 +1387,7 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
 
 
 def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
-                               min_hours_per_day=12, **kwargs):
+                               min_hours_per_day=12):
     """
     Characterize precipitation patterns and calculate daily mean VOD values.
 
@@ -1524,27 +1408,40 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
         New columns: 'precip_flag', 'VOD1_anom_masked', 'VOD1_daily'
     """
     result = pd.DataFrame(index=df.index)
-    
-    # Create flag for upper quantile (precipitation events) based on monthly thresholds
-    result['precip_flag'] = 0  # Initialize flag with zeros
-    result['month'] = df.index.month  # Extract month information
-    
-    # Calculate and apply threshold for each month separately
-    for month in result['month'].unique():
-        # Get data for this month only
-        month_data = df.loc[df.index.month == month, dataset_col]
+
+    try:
         
-        if not month_data.empty:
-            # Calculate threshold for this month
-            month_threshold = month_data.quantile(precip_quantile)
-            
-            # Apply threshold to flag precipitation events for this month
-            month_mask = (df.index.month == month) & (df[dataset_col] > month_threshold)
-            result.loc[month_mask, 'precip_flag'] = 1
+        wetness = pd.read_csv(filepath_environmentaldata, index_col=0, parse_dates=True)["wet"]
+        # make wetness mask (if wetness == "yes", then True)
+        wetness_mask = (wetness == "yes").astype(int)
+        # First convert to datetime, then ensure all dates are set to midnight
+        wetness_mask.index = pd.to_datetime(wetness_mask.index, format='mixed', utc=True)
+        wetness_mask.name = 'precip_flag'
+        # merge wetness mask on index (left on result)
+        result = result.join(wetness_mask, how='left')
+    except FileNotFoundError:
+        print(f"Warning: '{filepath_environmentaldata}' not found. Using default precipitation detection.")
+        # If wetness data is not available, initialize with zeros
+        result['precip_flag'] = 0
     
-    # Convert to integer type and drop the temporary month column
-    result['precip_flag'] = result['precip_flag'].astype(int)
-    result.drop('month', axis=1, inplace=True)
+        # Create flag for upper quantile (precipitation events) based on monthly thresholds
+        result['month'] = df.index.month  # Extract month information
+        
+        # Calculate and apply threshold for each month separately
+        for month in result['month'].unique():
+            # Get data for this month only
+            month_data = df.loc[df.index.month == month, dataset_col]
+            
+            if not month_data.empty:
+                # Calculate threshold for this month
+                month_threshold = month_data.quantile(precip_quantile)
+                
+                # Apply threshold to flag precipitation events for this month
+                month_mask = (df.index.month == month) & (df[dataset_col] > month_threshold)
+                result.loc[month_mask, 'precip_flag'] = 1
+        # Convert to integer type and drop the temporary month column
+        result['precip_flag'] = result['precip_flag'].astype(int)
+        result.drop('month', axis=1, inplace=True)
     
     # Mask anomalies during precipitation events
     result['VOD1_anom_masked'] = df[dataset_col].copy()
@@ -1611,53 +1508,15 @@ def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=
             normalized_band = f"{band}_norm"
             result[normalized_band] = df[band] - band_mean
             normalized_bands.append(normalized_band)
+            
+    common_mean = df[sbas_bands].mean(axis=1).mean()
     
     # Calculate mean of normalized SBAS bands for weekly trends
     if normalized_bands:
         result['VOD1_S_weekly'] = result[normalized_bands].mean(axis=1)
-        
-        # Apply detrending if requested
-        if detrend and not result['VOD1_S_weekly'].isna().all():
-            # Resample to daily frequency for trend extraction
-            daily_data = result['VOD1_S_weekly'].resample('D').mean()
-            daily_data = daily_data.dropna()
-            
-            if len(daily_data) >= min_periods:
-                # Create time index as float for LOESS (days since start)
-                time_idx = np.array((daily_data.index - daily_data.index[0]).total_seconds() / (24*3600))
-                
-                # Apply LOESS smoothing to extract trend
-                if len(daily_data) > 2:  # Need at least 3 points for smoothing
-                    smooth_result = lowess(
-                        daily_data.values,
-                        time_idx,
-                        frac=loess_frac,
-                        return_sorted=False
-                    )
-                    
-                    # Create a Series with the trend
-                    trend = pd.Series(smooth_result, index=daily_data.index)
-                    
-                    # Reindex to original frequency and interpolate
-                    trend_reindexed = trend.reindex(result.index, method='nearest')
-                    
-                    # Store both the trend and detrended data
-                    result['VOD1_S_weekly_trend'] = trend_reindexed
-                    result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly'] - trend_reindexed
-                    result["VOD1_S_weekly"] = result['VOD1_S_weekly_detrended']
-                else:
-                    # If too few points for LOESS, just subtract mean
-                    result['VOD1_S_weekly_trend'] = daily_data.mean()
-                    result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly'] - daily_data.mean()
-            else:
-                # Not enough periods for detrending
-                result['VOD1_S_weekly_trend'] = np.nan
-                result['VOD1_S_weekly_detrended'] = result['VOD1_S_weekly']
+        result['VOD1_S_weekly_addmean'] = result['VOD1_S_weekly'] + common_mean
     else:
         result['VOD1_S_weekly'] = np.nan
-        if detrend:
-            result['VOD1_S_weekly_trend'] = np.nan
-            result['VOD1_S_weekly_detrended'] = np.nan
     
     return result
 
@@ -1851,12 +1710,19 @@ def create_satellite_mask(df, min_satellites=13, satellite_col='Ns_t', **kwargs)
         print(f"Warning: Satellite column '{satellite_col}' not found in the dataframe")
         return pd.Series(True, index=df.index)  # Default to no masking
     
-    return df[satellite_col] >= min_satellites
+    nan_in_nsat = pd.isna(df[satellite_col])
+    min_sat = (df[satellite_col] >= min_satellites)
+    # Combine conditions: True if NaN or meets minimum satellite count
+    mask = nan_in_nsat | min_sat
+    return mask
 
 
 def create_vod_percentile_mask(df, vod_column='VOD1_anom', min_percentile=0.05, **kwargs):
     """
     Create a mask based on VOD value percentile.
+    
+    VOD time series is detrended before using low-pass loess filter.
+    
 
     Parameters:
     -----------
@@ -1875,12 +1741,72 @@ def create_vod_percentile_mask(df, vod_column='VOD1_anom', min_percentile=0.05, 
     if vod_column not in df.columns:
         print(f"Warning: VOD column '{vod_column}' not found in the dataframe")
         return pd.Series(True, index=df.index)  # Default to no masking
+        
+    # cast as unixtime
+    # Get valid data (non-NaN values)
+    valid_mask = ~df[vod_column].isna()
+    valid_indices = df.index[valid_mask]
+    valid_values = df.loc[valid_mask, vod_column].values
     
-    # Calculate the percentile threshold
-    percentile_threshold = df[vod_column].quantile(min_percentile)
+    if len(valid_values) < 2:
+        print(f"Warning: Not enough valid data points in '{vod_column}' for detrending")
+        return pd.Series(True, index=df.index)
     
-    # Create the mask
-    return df[vod_column] >= percentile_threshold
+    # Convert datetime indices to numeric values for LOESS
+    if isinstance(valid_indices[0], (pd.Timestamp, np.datetime64)):
+        x_values = np.array([(idx - valid_indices[0]).total_seconds() for idx in valid_indices])
+    else:
+        x_values = np.arange(len(valid_indices))
+    
+    # Apply LOESS smoothing to get the trend
+    loess_frac = kwargs.get('loess_frac', 0.1)
+    loess_result = lowess(valid_values, x_values, frac=loess_frac, it=0)
+    trend_values = loess_result[:, 1]
+    
+    # Calculate detrended values by subtracting the trend
+    detrended_values = valid_values - trend_values
+    detrended_values = pd.Series(detrended_values, index=valid_indices)
+    
+    # Calculate percentile threshold on detrended data
+    percentile_threshold = np.percentile(detrended_values, min_percentile * 100)
+    
+    # Create mask: True if detrended value >= threshold
+    detrended_mask = detrended_values >= percentile_threshold
+    
+    # Create full mask with default True for NaN values
+    full_mask = pd.Series(True, index=df.index)
+    
+    # Map values back to full mask using positions rather than indices
+    full_mask.iloc[np.where(valid_mask)[0]] = detrended_mask.values
+    
+    # Plot if requested
+    if kwargs.get('plot', False):
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(6, 4))
+        plt.plot(valid_indices, valid_values, 'b-', alpha=0.7, label=f'Original {vod_column}')
+        plt.plot(valid_indices, trend_values, 'r-', linewidth=2, label='LOESS Trend')
+        plt.plot(valid_indices, detrended_values, 'g-', alpha=0.7, label='Detrended VOD')
+        plt.axhline(y=percentile_threshold, color='purple', linestyle='--',
+                    label=f'{min_percentile * 100:.1f}th Percentile ({percentile_threshold:.3f})')
+        
+        # Highlight filtered points
+        filtered_indices = [valid_indices[i] for i in range(len(valid_indices)) if not detrended_mask[i]]
+        filtered_values = [detrended_values[i] for i in range(len(valid_indices)) if not detrended_mask[i]]
+        
+        if filtered_indices:
+            plt.scatter(filtered_indices, filtered_values, color='red', s=20, alpha=0.8,
+                        label='Filtered Points (excluded)')
+        
+        plt.title(f'VOD Data with LOESS Trend and {min_percentile * 100:.1f}th Percentile Threshold')
+        plt.xlabel('Date')
+        plt.ylabel('VOD Value')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+    
+    return full_mask
 
 
 def identify_column_types(column_name):
@@ -2043,3 +1969,64 @@ def filter_vod_columns(df, column_type=None, band=None, algorithm=None,
                          metadata.loc[col, 'satellite'] is None]
     
     return filtered_cols
+
+
+def create_vod_trend(df, vod_column, frac=0.1, it=3, **kwargs):
+    """
+    Create a new variable containing the LOESS trend of a VOD time series.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD data
+    vod_column : str
+        Column name for the VOD data to use for trend extraction (e.g., 'VOD1_anom')
+    frac : float, default=0.1
+        Fraction of data used for LOESS smoothing (controls smoothness)
+    it : int, default=3
+        Number of robustifying iterations for LOESS
+
+    Returns:
+    --------
+    pandas.Series
+        New series containing the LOESS trend with index matching df
+    """
+    if vod_column not in df.columns:
+        print(f"Warning: VOD column '{vod_column}' not found in the dataframe")
+        return pd.Series(np.nan, index=df.index)
+    
+    # Extract band number from column name (assuming format VOD{band}_*)
+    import re
+    band_match = re.search(r'VOD(\d+)', vod_column)
+    if band_match:
+        band = band_match.group(1)
+    else:
+        band = "X"  # Default if no band found
+    
+    # Get VOD series, dropping NaN values for LOESS fitting
+    vod_series = df[vod_column].copy()
+    valid_indices = ~vod_series.isna()
+    
+    # Create a series of indices for LOESS fitting (required for lowess function)
+    x = np.arange(len(vod_series))[valid_indices]
+    y = vod_series[valid_indices].values
+
+    
+    # Apply LOESS smoothing if there are enough data points
+    if len(x) > 10:  # Minimum required for meaningful smoothing
+        # Apply LOESS smoothing
+        trend_values = lowess(y, x, frac=frac, it=it, return_sorted=False)
+        
+        # Create full series with NaN where original data had NaN
+        full_trend = np.full(len(vod_series), np.nan)
+        full_trend[valid_indices] = trend_values
+        
+        # Create result series with appropriate name
+        result = pd.Series(full_trend, index=df.index, name=f"VOD{band}_trend")
+    else:
+        result = pd.Series(np.nan, index=df.index, name=f"VOD{band}_trend")
+        
+    # interpolate nan inside (both) limit = 1 day if freq is 30min
+    result = result.interpolate(method='linear', limit_direction='both', limit=24)
+    
+    return result

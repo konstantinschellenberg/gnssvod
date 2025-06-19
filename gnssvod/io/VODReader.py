@@ -115,6 +115,8 @@ class VODReader:
         angular_resolution = settings.get('angular_resolution', 2)
         temporal_resolution = settings.get('temporal_resolution', 30)
         angular_cutoff = settings.get('angular_cutoff', 30)
+        search_agg_fun_ts = settings.get('search_agg_fun_ts', "mean")
+        
         
         # Get the base directory for VOD time series files
         base_dir = DATA / "timeseries"
@@ -164,20 +166,8 @@ class VODReader:
                     
                     # Look for angular resolution, temporal resolution, and cutoff parameters
                     # Try to find these parameters in different locations in the metadata
-                    
-                    # First check in "results" variables if they contain these parameters
-                    found_resolution_params = False
-                    if "results" in metadata and "variables" in metadata["results"]:
-                        if ("angular_resolution" in metadata["results"]["variables"] and
-                                "temporal_resolution" in metadata["results"]["variables"] and
-                                "angular_cutoff" in metadata["results"]["variables"]):
-                            # The file contains these parameters as data variables
-                            # We consider this a match as we can check actual values after loading
-                            nc_file = metadata_file.replace('_metadata.json', '.nc')
-                            matching_files.append((nc_file, metadata_file))
-                            found_resolution_params = True
-                    
                     # If not found in results, check in anomaly_processing section
+                    found_resolution_params = False
                     if not found_resolution_params:
                         ap = metadata.get("anomaly_processing", {})
                         
@@ -185,16 +175,19 @@ class VODReader:
                         ar_value = ap.get("angular_resolution")
                         tr_value = ap.get("temporal_resolution")
                         ac_value = ap.get("angular_cutoff")
+                        agg_var = ap.get("agg_fun_ts", search_agg_fun_ts)
                         
                         # Add to file_info for display
                         file_info["angular_resolution"] = ar_value
                         file_info["temporal_resolution"] = tr_value
                         file_info["angular_cutoff"] = ac_value
+                        file_info["agg_fun_ts"] = agg_var
                         
                         # Check if parameters match
                         if (ar_value == angular_resolution and
                                 tr_value == temporal_resolution and
-                                ac_value == angular_cutoff):
+                                ac_value == angular_cutoff and
+                                agg_var == search_agg_fun_ts):
                             nc_file = metadata_file.replace('_metadata.json', '.nc')
                             matching_files.append((nc_file, metadata_file))
                 
@@ -312,8 +305,8 @@ class VODReader:
         try:
             from processing.settings import (
                 station, ground_station, tower_station, bands,
-                angular_resolution, temporal_resolution, agg_func,
-                anomaly_type, angular_cutoff, single_file_interval
+                angular_resolution, temporal_resolution, agg_fun_ts,
+                angular_cutoff
             )
             
             self.default_settings = {
@@ -323,13 +316,11 @@ class VODReader:
                 'bands': bands,
                 'angular_resolution': angular_resolution,
                 'temporal_resolution': temporal_resolution,
-                'agg_func': agg_func,
-                'anomaly_type': anomaly_type,
+                'agg_fun_ts': agg_fun_ts,
                 'angular_cutoff': angular_cutoff,
-                'time_interval': single_file_interval
             }
         except ImportError:
-            print("Warning: Could not import settings from processing.settings") if self.verbose else None
+            print("Warning: Could not import settings from processing.settings")
             self.default_settings = {}
             
     def _prep_data(self):

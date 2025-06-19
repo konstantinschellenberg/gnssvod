@@ -23,9 +23,11 @@ vod_ts = pd.read_parquet(vod_file, engine='pyarrow')
 # -----------------------------------
 # vizualization
 
-plot_vod_fingerprint(vod_ts, 'VOD_optimal_zscore', title="Optimal VOD (Z-Score Method)")
-# plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1", save_dir=FIG)
-# plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly_trend', title="Weekly Mean SBAS VOD1", save_dir=FIG)
+# plot_vod_fingerprint(vod_ts, 'VOD1_trend', title="VOD1 Anomaly", save_dir=FIG)
+# optimized
+# plot_vod_fingerprint(vod_ts, 'Ns_t', title="Number of Satellites", save_dir=FIG)
+# plot_vod_fingerprint(vod_ts, 'precip_flag')
+# plot_vod_fingerprint(vod_ts, 'VOD1_anom', title="VOD1 Anomaly", save_dir=FIG)
 
 fingerprint = False  # Set to True to plot the fingerprint of the VOD data
 if fingerprint or plotall:
@@ -40,6 +42,7 @@ if fingerprint or plotall:
     
     # seasonal VOD
     plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly_addmean', title="Weekly Mean SBAS VOD1",save_dir = FIG)
     plot_vod_fingerprint(vod_ts, 'VOD1_S33', title="SBAS VOD1 S33",save_dir = FIG)
     plot_vod_fingerprint(vod_ts, 'VOD1_S35', title="SBAS VOD1 S35",save_dir = FIG)
 
@@ -48,9 +51,9 @@ if fingerprint or plotall:
     plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly (Savitzky-Golay Filtered)",save_dir = FIG)
     
     # Result
-    # plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1")
-    # plot_vod_fingerprint(vod_ts, 'VOD1_daily', title="Daily Mean VOD1 Anomaly")
-    # plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly (Savitzky-Golay Filtered)")
+    plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1")
+    plot_vod_fingerprint(vod_ts, 'VOD1_trend', title="Daily Mean VOD1 Anomaly")
+    plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly (Savitzky-Golay Filtered)")
     
     # Optimal VOD
     # 1) add
@@ -71,33 +74,45 @@ figsize = (4, 3)
 plot = False
 if plot or plotall:
     # Components
-    plot_vod_timeseries(vod_ts, ['VOD1_S_weekly'], figsize=figsize, save_dir = FIG)
-    plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize, save_dir = FIG)
-    plot_vod_timeseries(vod_ts, ['VOD1_diurnal'], figsize=figsize, save_dir = FIG)
+    # plot_vod_timeseries(vod_ts, ['VOD1_S_weekly'], figsize=figsize, save_dir = FIG)
+    # plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize, save_dir = FIG)
+    # plot_vod_timeseries(vod_ts, ['VOD1_diurnal'], figsize=figsize, save_dir = FIG)
     
     # Result z-score
-    plot_vod_timeseries(vod_ts, ['VOD_optimal_zscore'], interactive=True)
+    plot_vod_timeseries(vod_ts, ['VOD1_anom'], interactive=True)
 
 # -----------------------------------
 wvlt = False
 if wvlt or plotall:
     analyze_wavelets(vod_ts, 'VOD1_S_weekly')
-    
+    analyze_wavelets(vod_ts, 'VOD1_daily')
+    analyze_wavelets(vod_ts, 'VOD1_diurnal')
+    analyze_wavelets(vod_ts, 'VOD_optimal_zscore')
+
 # -----------------------------------
-diurnal = False
+diurnal = True
 if diurnal or plotall:
-    plot_diurnal_cycle(vod_ts, ['VOD_optimal_zscore'],
-                           normalize=None, ncols=1,
-                           title="Optimal Diurnal Cycles",
-                          figsize=(4, 4), save_dir = FIG)
-    plot_diurnal_cycle(vod_ts, ['VOD1_S_weekly'],
-                           normalize=None, ncols=1,
-                           title="SBAS diurnal Cycles",
-                          figsize=(4, 4), save_dir = FIG)
-    plot_diurnal_cycle(vod_ts, ['VOD1_diurnal'],
-                           normalize=None, ncols=1,
-                           title="High Biomass diurnal Cycles",
-                          figsize=(4, 4), save_dir = FIG)
+    vod_yitong = vod_ts.copy()
+    # only data between 2022-06-01 and 2022-10-31
+    vod_yitong = vod_yitong[(vod_yitong.index >= pd.to_datetime('2022-05-30', utc=True)) &
+                            (vod_yitong.index <= pd.to_datetime('2022-08-30', utc=True))]
+    plot_diurnal_cycle(vod_yitong, ['VOD1_anom_tp'],
+                       normalize=None, ncols=1,
+                       show_std = False,
+                       title="Diurnal Cycle of VOD1 Anomaly (Yitong)",
+                      figsize=(4, 2.5), save_dir = FIG)
+    # plot_diurnal_cycle(vod_ts, ['VOD_optimal_zscore'],
+    #                        normalize=None, ncols=1,
+    #                        title="Optimal Diurnal Cycles",
+    #                       figsize=(4, 4), save_dir = FIG)
+    # plot_diurnal_cycle(vod_ts, ['VOD1_S_weekly'],
+    #                        normalize=None, ncols=1,
+    #                        title="SBAS diurnal Cycles",
+    #                       figsize=(4, 4), save_dir = FIG)
+    # plot_diurnal_cycle(vod_ts, ['VOD1_diurnal'],
+    #                        normalize=None, ncols=1,
+    #                        title="High Biomass diurnal Cycles",
+    #                       figsize=(4, 4), save_dir = FIG)
 
 hist = False
 if hist or plotall:
@@ -107,12 +122,12 @@ if hist or plotall:
                    bins=50, percentiles=[5, 95], save_dir = FIG)
 
 # -----------------------------------
-# authors = False
-# if authors:
-#     # only run, if data (time_subset) encompasses 2022-2024 data
-#     if not vod_ts.index.min() < pd.to_datetime('2022-05-01', utc=True) or vod_ts.index.max() > pd.to_datetime('2024-12-31', utc=True):
-#         raise ValueError("Data does not cover the required time range for author plots.")
-#     # Plot in different author styles
-#     plot_vod_by_author(vod_ts, 'yitong')
-#     plot_vod_by_author(vod_ts, 'humphrey')
-#     plot_vod_by_author(vod_ts, 'burns')
+authors = True
+if authors:
+    # only run, if data (time_subset) encompasses 2022-2024 data
+    # if not vod_ts.index.min() < pd.to_datetime('2022-05-01', utc=True) or vod_ts.index.max() > pd.to_datetime('2024-12-31', utc=True):
+    #     raise ValueError("Data does not cover the required time range for author plots.")
+    # Plot in different author styles
+    plot_vod_by_author(vod_ts, 'yitong')
+    # plot_vod_by_author(vod_ts, 'humphrey')
+    # plot_vod_by_author(vod_ts, 'burns')

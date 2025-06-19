@@ -331,13 +331,17 @@ class VODProcessor:
             Combined results from all parameter combinations
         """
         
+        ar = angular_resolution
+        ac = angular_cutoff
+        tr = temporal_resolution
+        
         # Transform all parameters to lists if they are not already
-        if not isinstance(angular_resolution, list):
-            raise ValueError("angular_resolution must be a list of values")
-        if not isinstance(angular_cutoff, list):
-            raise ValueError("angular_cutoff must be a list of values")
-        if not isinstance(temporal_resolution, list):
-            raise ValueError("temporal_resolution must be a list of values")
+        if not isinstance(ar, int):
+            raise ValueError("angular_resolution must be int")
+        if not isinstance(ac, int):
+            raise ValueError("angular_cutoff must be int")
+        if not isinstance(tr, int):
+            raise ValueError("temporal_resolution must be int")
             
         # Store anomaly parameters for metadata
         self.anomaly_params = kwargs.copy()
@@ -345,45 +349,50 @@ class VODProcessor:
 
         print("++++++++++++++++++++++++++++++++")
         print(f"Processing VOD data for {self.station} with "
-              f"{len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution)} "
+              f"{ar*ac*tr} "
               f"parameter combinations")
         
+        # if not len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution) == 1 –> raise
+        if ar*ac*tr == 0:
+            raise ValueError("At least one parameter must be provided for angular_resolution, ")
+        
+        self.anomaly_params.update({"angular_resolution": ar,
+                                    "angular_cutoff": ac,
+                                    "temporal_resolution": tr})
         # Check for existing results files and load them if available
         result_paths = []
         
+        # Create a unique filename based on parameters
         start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
         end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
         time_abbr = start_date if start_date == end_date else f"{start_date}_{end_date}"
         
-        for ar in angular_resolution:
-            for ac in angular_cutoff:
-                for tr in temporal_resolution:
-                    # Extract year and month from time interval for compact representation
-                    filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
-                    file_path = self.temp_dir / filename
-                    
-                    print(f"Interval: {self.time_interval}, ")
-                    # Check if file exists and overwrite flag
-                    if file_path.exists() and not overwrite:
-                        print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
-                        result_paths.append(str(file_path))
-                    else:
-                        # Process this parameter combination immediately
-                        print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
-                        params = self.anomaly_params.copy()
-                        currrent_updates = {
-                            'angular_resolution': ar,
-                            'angular_cutoff': ac,
-                            'temporal_resolution': tr,
-                            'vod_anomaly_filename': filename,
-                        }
-                        # Update with kwargs
-                        params.update(currrent_updates)
-                        
-                        # Process the parameter combination directly
-                        result = self._run_parameter_combination(params)
-                        if result is not None:
-                            result_paths.append(result)
+        # Extract year and month from time interval for compact representation
+        filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
+        file_path = self.temp_dir / filename
+        
+        print(f"Interval: {self.time_interval}, ")
+        # Check if file exists and overwrite flag
+        if file_path.exists() and not overwrite:
+            print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
+            result_paths.append(str(file_path))
+        else:
+            # Process this parameter combination immediately
+            print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
+            params = self.anomaly_params.copy()
+            currrent_updates = {
+                'angular_resolution': ar,
+                'angular_cutoff': ac,
+                'temporal_resolution': tr,
+                'vod_anomaly_filename': filename,
+            }
+            # Update with kwargs
+            params.update(currrent_updates)
+            
+            # Process the parameter combination directly
+            result = self._run_parameter_combination(params)
+            if result is not None:
+                result_paths.append(result)
         
         # Combine results into a single xarray dataset
         self.results = self._combine_results(result_paths)

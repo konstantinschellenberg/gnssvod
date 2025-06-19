@@ -40,6 +40,9 @@ ZIP = ROOT / 'zip_archive'
 AUX = DATA / 'orbit'
 TEST = DATA / "test"
 ARD = DATA / 'ard'
+TERRALIVE = Path("/home/konsch/Documents/5-Repos/terralive")
+ENVDATA = TERRALIVE / 'data_output' / 'tb_merged'
+
 
 GROUND = 'subcanopy/MOz1_Grnd'
 TOWER = 'tower/MOz2_Twr'
