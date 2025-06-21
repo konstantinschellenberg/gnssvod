@@ -4,7 +4,7 @@ import numpy as np
 from pandas.io.sas.sas_constants import sas_date_formats
 
 from definitions import DATA
-from processing.inspect_vod_funs import characterize_precipitation, characterize_weekly_trends, \
+from processing.inspect_vod_funs import characterize_daily_vod, characterize_weekly_trends, \
     create_optimal_estimator, create_satellite_mask, \
     create_vod_percentile_mask, \
     create_vod_trend, filter_vod_columns, process_diurnal_vod
@@ -144,8 +144,26 @@ if __name__ == "__main__":
             
             # todo: use wetness data to filter precipitation patterns
             print("Characterizing precipitation patterns...")
-            precips = characterize_precipitation(vod_merged, dataset_col='VOD1_anom_gps+gal', precip_quantile=precip_quantile,
+            
+            """
+            - gps+gal
+            - top 60% biomass
+            
+            TODOs now:
+            - cut precip from all data
+            - better quantile for dips
+            - diurnal receives trend! should not
+            
+            """
+            daily = characterize_daily_vod(vod_merged, dataset_col='VOD1_anom_highbiomass', offset_col='VOD1',
+                                           precip_quantile=precip_quantile,
+                                           min_hours_per_day=12)
+            
+            daily_old = characterize_precipitation(vod_merged, dataset_col='VOD1_anom_gps+gal', precip_quantile=precip_quantile,
                                                  min_hours_per_day=12)
+            
+            from matplotlib import pyplot as plt
+            daily.plot(title="VOD Daily Mean", ylabel="VOD", xlabel="Time");  plt.show()
             
             trend1 = create_vod_trend(vod_merged, 'VOD1_anom_gps+gal')
             trend2 = create_vod_trend(vod_merged, 'VOD2_anom_gps+gal')
@@ -171,14 +189,16 @@ if __name__ == "__main__":
             
             # adding "best" parameter from iterative arithmetics search (spearman correlation against branch water potential)
             # VOD1_daily + VOD2_ke_anom
-            vod_optimal["VOD_bestspearman"] = precips['VOD1_daily'] + vod_merged['VOD2_ke_anom']
+            
+            # todo: doesn't work anymore after VOD1_daily contains nan values
+            # vod_optimal["VOD_bestspearman"] = precips['VOD1_daily'] + vod_merged['VOD2_ke_anom']
             
             # Add the optimal estimator back to the original dataframe
             vod_optimal['VOD_optimal'] = vod_optimal[optimal_vod]
             
             # join on index with vod_ts
             intermediate_steps = pd.DataFrame({
-                'VOD1_daily': precips['VOD1_daily'],
+                'VOD1_daily': daily['VOD1_daily'],
                 'VOD1_S_weekly': weekly['VOD1_S_weekly'],
                 'VOD1_diurnal': diurnal['VOD1_diurnal']
             }, index=vod_merged.index
@@ -188,13 +208,16 @@ if __name__ == "__main__":
             
             # Only join columns that don't already exist in vod_ts
             vod_merged = vod_merged.join(vod_optimal[[col for col in vod_optimal.columns if col not in vod_merged.columns]])
-            vod_merged = vod_merged.join(precips[[col for col in precips.columns if col not in vod_merged.columns]])
+            vod_merged = vod_merged.join(daily[[col for col in daily.columns if col not in vod_merged.columns]])
             vod_merged = vod_merged.join(weekly[[col for col in weekly.columns if col not in vod_merged.columns]])
             vod_merged = vod_merged.join(diurnal[[col for col in diurnal.columns if col not in vod_merged.columns]])
             vod_merged = pd.concat([vod_merged, trend1, trend2], axis=1)
             
             # sort columns by alphanumeric order
             vod_merged = vod_merged.reindex(sorted(vod_merged.columns), axis=1)
+            
+            # set nan to all values < -100
+            vod_merged[vod_merged < -100] = np.nan
             
             # -----------------------------------
             # last checks

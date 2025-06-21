@@ -147,7 +147,7 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
     
     # num_bins = kwargs.get('vod_percentile_bins', 5)
     # vod_ts_1 = calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_resolution,
-    #                                             num_bins=num_bins, plot_bins=False, suffix="tp")
+#                                             num_bins=num_bins, plot_bins=False, suffix="tp")
     # vod_ts_2 = calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_resolution,
     #                                          num_bins=num_bins, plot_bins=False, suffix="tps")
     
@@ -183,22 +183,38 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
             continue
         if f"VOD{band[-1]}_S" not in vod_ts_sbas.columns:
             vod_ts_sbas[f"VOD{band[-1]}_S"] = vod_ts_sbas.filter(like=f"VOD{band[-1]}_S").mean(axis=1)
+            
+    # -----------------------------------
+    # Calculate the VOD{band}_gps-gal time series only based on GPS and GALILEO satellites
+    vod_gps_gal = vod[vod.index.get_level_values('SV').str.startswith(('G', 'E'))]  # Filter GPS + GALILEO
+    
+    # Group by Epoch and aggregate using the specified function
+    vod_band_cols = {}
+    for band in band_ids:
+        if band in vod_gps_gal.columns:
+            # Calculate mean VOD for each band across GPS+GALILEO satellites
+            vod_band_cols[f"{band}_gps+gal"] = vod_gps_gal[band].groupby(
+                pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_fun_ts)
+    
+    # Convert to DataFrame
+    vod_ts_gps_gal = pd.DataFrame(vod_band_cols)
     
     # -----------------------------------
     # Add biomass-binned anomalies if requested
     if calculate_biomass_bins:
         # GPS only
-        vod_ts_biomass_gps = calculate_biomass_binned_anomalies(
+        vod_ts_anom_biomass_gps = calculate_biomass_binned_anomalies(
             vod, vod_avg, band_ids, temporal_resolution,
-            con=['GPS'], biomass_bins=biomass_bins, suffix='gps', **kwargs
+            con=['GPS', 'Galileo'], biomass_bins=biomass_bins, suffix='gps+gal', **kwargs
         )
         
         # All constellations
         kwargs['plot_bins'] = True  # set to True to plot the bin histograms for visualization
-        vod_ts_biomass_all = calculate_biomass_binned_anomalies(
-            vod, vod_avg, band_ids, temporal_resolution,
-            con=None, biomass_bins=biomass_bins, **kwargs
-        )
+        # todo: TO BE IMPLEMENTED
+        # vod_ts_biomass_gps = calculate_biomass_binned_anomalies(
+        #     vod_ts_gps_gal, vod_avg, band_ids, temporal_resolution,
+        #     con=['GPS', 'Galileo'], biomass_bins=biomass_bins, **kwargs
+        # )
     # -----------------------------------
     # join new features to the aggregated time series
     ds3 = pd.DataFrame({
@@ -211,10 +227,11 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
                        join(ds3).
                        join(vod_ts_sbas).
                        join(vod_ts_con1).
-                       join(vod_ts_con2))
+                       join(vod_ts_con2).
+                       join(vod_ts_gps_gal))
     
     if calculate_biomass_bins:
-        vod_ds_combined = vod_ds_combined.join(vod_ts_biomass_gps).join(vod_ts_biomass_all)
+        vod_ds_combined = vod_ds_combined.join(vod_ts_anom_biomass_gps)
     
     # -----------------------------------
     ploting_hemi = False

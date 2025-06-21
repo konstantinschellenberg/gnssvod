@@ -204,8 +204,6 @@ def plot_vod_fingerprint(df, vars, figsize=(3, 6), title=None, cmap="viridis", s
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    from matplotlib.ticker import FuncFormatter
-    import matplotlib as mpl
     
     # Make a copy to avoid modifying the original
     df = df.copy()
@@ -242,12 +240,13 @@ def plot_vod_fingerprint(df, vars, figsize=(3, 6), title=None, cmap="viridis", s
     # Create pivot table
     
     # in aggfun, if nan, use np.nanmean
-    def nanmean(x):
-        return np.nanmean(x) if len(x) > 0 else np.nan
     pivot_table = df.pivot_table(values=vars, index='doy', columns='tod', aggfunc="mean")
     
     # set -9999 to nan
     pivot_table.replace(-9999, np.nan, inplace=True)
+    
+    # alle Wert unter -100 –> nan
+    pivot_table[pivot_table < -100] = np.nan
     
     # Determine color limits
     if hue_limit is None:
@@ -1386,8 +1385,9 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     return fig
 
 
-def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
-                               min_hours_per_day=12):
+def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', offset_col='VOD1', precip_quantile=0.9,
+                           interpolate_when_day_too_many_nan_in_day=False,
+                           min_hours_per_day=12):
     """
     Characterize precipitation patterns and calculate daily mean VOD values.
 
@@ -1410,7 +1410,6 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
     result = pd.DataFrame(index=df.index)
 
     try:
-        
         wetness = pd.read_csv(filepath_environmentaldata, index_col=0, parse_dates=True)["wet"]
         # make wetness mask (if wetness == "yes", then True)
         wetness_mask = (wetness == "yes").astype(int)
@@ -1421,6 +1420,7 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
         result = result.join(wetness_mask, how='left')
     except FileNotFoundError:
         print(f"Warning: '{filepath_environmentaldata}' not found. Using default precipitation detection.")
+        raise ValueError("Wetness data not found. Please provide a valid path to wetness data.")
         # If wetness data is not available, initialize with zeros
         result['precip_flag'] = 0
     
@@ -1444,30 +1444,39 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
         result.drop('month', axis=1, inplace=True)
     
     # Mask anomalies during precipitation events
-    result['VOD1_anom_masked'] = df[dataset_col].copy()
-    result.loc[result['precip_flag'] == 1, 'VOD1_anom_masked'] = np.nan
+    var_masked = f'{dataset_col}_masked'
+    result[var_masked] = df[dataset_col].copy()
+    result.loc[result['precip_flag'] == 1, var_masked] = np.nan
     
     # Calculate required samples based on data frequency
     time_delta = df.index[1] - df.index[0]
     min_samples_per_day = min_hours_per_day * (3600 / pd.Timedelta(time_delta).total_seconds())
     
     # Calculate daily mean VOD
-    daily_counts = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).count()
-    daily_means = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).mean()
+    daily_counts = result[var_masked].groupby(pd.Grouper(freq='D')).count()
+    daily_means = result[var_masked].groupby(pd.Grouper(freq='D')).mean()
     
     # Identify days with insufficient data
     insufficient_days = daily_counts < min_samples_per_day
     daily_means[insufficient_days] = np.nan
     
     # Interpolate values for days with insufficient data
-    interpolated_daily = daily_means.interpolate(method='linear', limit=5)
+    if interpolate_when_day_too_many_nan_in_day:
+        print("Interpolating daily means for days with too many NaNs...")
+        interpolated_daily = daily_means.interpolate(method='linear', limit=5)
+        # Reindex back to original timestamp frequency
+        result['VOD1_daily'] = interpolated_daily.reindex(df.index, method='ffill')
+    else:
+        # First reindex without filling method to map days to their original timestamps
+        result['VOD1_daily'] = daily_means.reindex(df.index)
+        # Then forward fill only within each day, preserving NaN days
+        result['VOD1_daily'] = result.groupby(result.index.date)['VOD1_daily'].transform('ffill')
     
-    # Reindex back to original timestamp frequency
-    result['VOD1_daily'] = interpolated_daily.reindex(df.index, method='ffill')
-    
+    # result['VOD1_daily'].plot(title='Daily Mean VOD1 Anomaly', ylabel='VOD1 Anomaly', xlabel='Date');plt.show()
+   
     # Add mean VOD1 value if available
     if 'VOD1' in df.columns:
-        result['VOD1_daily'] = result['VOD1_daily'] + df['VOD1'].mean()
+        result['VOD1_daily'] = result['VOD1_daily'] + df[offset_col].mean()
     
     return result
 

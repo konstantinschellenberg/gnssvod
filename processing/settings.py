@@ -63,7 +63,7 @@ timeintervals_closed = 'left'
 
 # general settings
 batch_run = True  # run all years in batch mode
-time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
+time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)
 """
 Runs:
 
@@ -91,14 +91,14 @@ visualization_timezone = "etc/GMT+6"
 # for ke calculation:
 canopy_height = 20.0  # meters
 z0 = 1.0  # height of the ground receiver
-make_ke = True  # whether to calculate ke
+make_ke = False  # whether to calculate ke
 
 # for VOD calculation (must be lists)
-angular_resolution = 1  # degrees
-temporal_resolution = 60  # minutes  # change from 30
-angular_cutoff = 10 # changed from 30
+angular_resolution = 2  # degrees
+temporal_resolution = 30  # minutes  # change from 30
+angular_cutoff = 30 # changed from 30
 agg_fun_vodoffset = "median"  # aggregation function for VOD offset added to the anomaly, can be "mean" or "median"
-agg_fun_ts = "mean"   # aggregation function for time series
+agg_fun_ts = "median"   # aggregation function for time series
 agg_fun_satincell = "median"  # Konstantin's aggregation function for satellite in cell, can be "mean" or "median"
 eval_num_obs_tps = True
 
@@ -126,18 +126,18 @@ gnss_parameters = {
 # SETTINGS (user) – 04_merge_years.py
 
 # settings for merging years (these criteria must match all datasets)
-angular_resolution = 1
-temporal_resolution = 60
-angular_cutoff = 10
-search_agg_fun_ts = "mean"
+angular_resolution = 2
+temporal_resolution = 30
+angular_cutoff = 30
+search_agg_fun_ts = "median"
 
 # general time series settings (manually set)
 filter_anomalies = False  # filter anomalies in time series
 
 # VOD "optimized" settings
 precip_quantile = 1.0  # NOT USED WHEN `filter_anomalies`. cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
-minimum_nsat = 0  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
-min_vod_quantile = 0  # def: 0.05. cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
+minimum_nsat = 13  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
+min_vod_quantile = 0.05  # def: 0.05. cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
 loess_frac = 0.1  # def: 0.1. fraction of data used for LOESS smoothing, e.g. 0.05 for 5% of data
 detrend_weekly = False
 
@@ -147,7 +147,9 @@ filepath_environmentaldata = ENVDATA / "tb_interval_20250529_160122.csv"  # path
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
 
 # todo: will be rename to be specific
-vod_file = ARD / "combined_vod_data_MOz_2022_to_2025.parquet"
+vod_file = ARD / "combined_vod_data_MOz_2024_to_2024.parquet"
+
+# combined_vod_data_MOz_2024_to_2024.parquet
 
 # subset must be in tz
 # time_subset = ('2023-05-15', "2024-12-30")  # ("2024-01-01", "2024-12-30")
