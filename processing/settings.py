@@ -135,11 +135,13 @@ search_agg_fun_ts = "median"
 filter_anomalies = False  # filter anomalies in time series
 
 # VOD "optimized" settings
-precip_quantile = 1.0  # NOT USED WHEN `filter_anomalies`. cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
-minimum_nsat = 13  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
+precip_quantile = None # NOT USED WHEN `filter_anomalies`. cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
+minimum_nsat = 12  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
 min_vod_quantile = 0.05  # def: 0.05. cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
-loess_frac = 0.1  # def: 0.1. fraction of data used for LOESS smoothing, e.g. 0.05 for 5% of data
+loess_frac = 0.1  # smoothing function for dip detection
 detrend_weekly = False
+mask_wetness_globally = True  # using the wetness data from MOFLUX to mask all VOD data
+plot = True  # plot intermediate results
 
 filepath_environmentaldata = ENVDATA / "tb_interval_20250529_160122.csv"  # path to environmental data file
 

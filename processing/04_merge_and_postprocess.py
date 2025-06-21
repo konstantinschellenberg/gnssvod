@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import numpy as np
-from pandas.io.sas.sas_constants import sas_date_formats
 
 from definitions import DATA
-from processing.inspect_vod_funs import characterize_daily_vod, characterize_weekly_trends, \
+from processing.inspect_vod_funs import characterize_daily_vod, characterize_precipitation, characterize_seasonals, \
     create_optimal_estimator, create_satellite_mask, \
     create_vod_percentile_mask, \
     create_vod_trend, filter_vod_columns, process_diurnal_vod
@@ -130,80 +129,60 @@ if __name__ == "__main__":
             print(f"Filtered VOD data to {vod_merged.shape[0]} rows with VOD1_anom >= {min_vod_quantile} quantile.")
             print(f"Total NaN values before filtering: {total_row}, after filtering: {non_nan}, filtered out: {total_row - non_nan}")
             print("+" * 50)
-            
-            # -----------------------------------
-            # HIGHBIOMASS
-            # make the mean of VOD1_anom_bin3 and VOD1_anom_bin4
-            
-            print(f"Calculating high biomass VOD anomalies...")
-            vod_merged['VOD1_anom_highbiomass'] = vod_merged[['VOD1_anom_bin2', 'VOD1_anom_bin3', 'VOD1_anom_bin4']].mean(
-                axis=1)
-            
+
             # -----------------------------------
             # 1. Characterize precipitation patterns using VOD1_anom
             
-            # todo: use wetness data to filter precipitation patterns
-            print("Characterizing precipitation patterns...")
-            
             """
-            - gps+gal
-            - top 60% biomass
-            
             TODOs now:
             - cut precip from all data
             - better quantile for dips
             - diurnal receives trend! should not
             
             """
-            daily = characterize_daily_vod(vod_merged, dataset_col='VOD1_anom_highbiomass', offset_col='VOD1',
+            
+            # -----------------------------------
+            daily = characterize_daily_vod(vod_merged, dataset_col='VOD1_anom_bin3-5_gps+gal',
                                            precip_quantile=precip_quantile,
                                            min_hours_per_day=12)
             
+            # -----------------------------------
             daily_old = characterize_precipitation(vod_merged, dataset_col='VOD1_anom_gps+gal', precip_quantile=precip_quantile,
                                                  min_hours_per_day=12)
             
-            from matplotlib import pyplot as plt
-            daily.plot(title="VOD Daily Mean", ylabel="VOD", xlabel="Time");  plt.show()
+            # from matplotlib import pyplot as plt
+            # daily.plot(title="VOD Daily Mean", ylabel="VOD", xlabel="Time", figsize=(5, 3));
+            # # legend outside to the bottom
+            # plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.5), ncol=2)
+            # plt.show()
             
-            trend1 = create_vod_trend(vod_merged, 'VOD1_anom_gps+gal')
-            trend2 = create_vod_trend(vod_merged, 'VOD2_anom_gps+gal')
+            # -----------------------------------
+            # trend1 = create_vod_trend(vod_merged, 'VOD1_anom_gps+gal')
+            # trend2 = create_vod_trend(vod_merged, 'VOD2_anom_gps+gal')
             
+            # -----------------------------------
             print("Characterizing weekly trends...")
-            weekly = characterize_weekly_trends(vod_merged, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=detrend_weekly)
+            weekly = characterize_seasonals(vod_merged, sbas_bands=['VOD1_S33', 'VOD1_S35'])
             
+            # -----------------------------------
             print("Processing diurnal VOD patterns...")
-            diurnal = process_diurnal_vod(vod_merged, diurnal_col='VOD1_anom_highbiomass',
-                                          window_hours=6, polyorder=2, apply_loess=True,
+            diurnal = process_diurnal_vod(vod_merged, diurnal_col='VOD1_anom_bin3-5_gps+gal',
+                                          window_hours=6, polyorder=2, detrending=True, smooth=False,
                                           loess_frac=0.1)
             
+            # -----------------------------------
             print("Creating optimal VOD estimator...")
             # Combine the results
             optimal_vod = "VOD_optimal_zscore"
             vod_optimal = create_optimal_estimator(
                 pd.DataFrame({
-                    'VOD1_daily': trend1,
-                    'VOD1_S_weekly': weekly['VOD1_S_weekly'],
+                    'VOD1_daily': daily["VOD1_daily"],
+                    'VOD1_SBAS_anom': weekly['VOD1_SBAS_norm'],
                     'VOD1_diurnal': diurnal['VOD1_diurnal']
                 }, index=vod_merged.index)
             )
-            
-            # adding "best" parameter from iterative arithmetics search (spearman correlation against branch water potential)
-            # VOD1_daily + VOD2_ke_anom
-            
-            # todo: doesn't work anymore after VOD1_daily contains nan values
-            # vod_optimal["VOD_bestspearman"] = precips['VOD1_daily'] + vod_merged['VOD2_ke_anom']
-            
-            # Add the optimal estimator back to the original dataframe
-            vod_optimal['VOD_optimal'] = vod_optimal[optimal_vod]
-            
-            # join on index with vod_ts
-            intermediate_steps = pd.DataFrame({
-                'VOD1_daily': daily['VOD1_daily'],
-                'VOD1_S_weekly': weekly['VOD1_S_weekly'],
-                'VOD1_diurnal': diurnal['VOD1_diurnal']
-            }, index=vod_merged.index
-            )
-            
+
+            # -----------------------------------
             print("Joining VOD data...")
             
             # Only join columns that don't already exist in vod_ts
@@ -211,14 +190,35 @@ if __name__ == "__main__":
             vod_merged = vod_merged.join(daily[[col for col in daily.columns if col not in vod_merged.columns]])
             vod_merged = vod_merged.join(weekly[[col for col in weekly.columns if col not in vod_merged.columns]])
             vod_merged = vod_merged.join(diurnal[[col for col in diurnal.columns if col not in vod_merged.columns]])
-            vod_merged = pd.concat([vod_merged, trend1, trend2], axis=1)
             
             # sort columns by alphanumeric order
             vod_merged = vod_merged.reindex(sorted(vod_merged.columns), axis=1)
             
+            # -----------------------------------
+            # sanitize data
+            print("Sanitizing VOD data...")
+            
             # set nan to all values < -100
             vod_merged[vod_merged < -100] = np.nan
             
+            # using wetness flag on all VOD data
+            if mask_wetness_globally:
+                print("Applying global wetness mask...")
+                # Keep track of NaN values in wetness_flag
+                wetness_nan = vod_merged['wetness_flag'].isna()
+                # Convert non-NaN values to boolean
+                wetness_flag = vod_merged['wetness_flag'].fillna(True).astype(bool)
+                
+                # Apply the wetness flag only to rows where wetness_flag is not NaN and is False
+                mask_to_apply = wetness_flag & ~wetness_nan
+                vod_columns = [col for col in vod_merged.columns if 'VOD' in col]
+                vod_merged.loc[mask_to_apply, vod_columns] = np.nan
+                
+                # Print how many rows were masked
+                masked_rows = mask_to_apply.sum()
+                print(
+                f"Masked {masked_rows} rows based on wetness flag (kept {wetness_nan.sum()} NaN wetness_flag rows).")
+                
             # -----------------------------------
             # last checks
             # make sure the datetime index is monotonic and without gaps

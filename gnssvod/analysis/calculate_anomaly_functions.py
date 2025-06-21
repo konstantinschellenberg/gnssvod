@@ -373,20 +373,27 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
         # Add bin information to VOD data
         vod_with_bins = vod_filtered.join(cell_to_bin, on='CellID')
         
-        # Join band means to the data
+        # Adding the sky sector mean (does not need to be bin-wise sky sectors fall into bins automatically)
         vod_with_means = vod_with_bins.join(vod_avg[[f"{band}_mean"]], on='CellID')
         
+        bins = {}
         # Calculate anomalies for each bin
         for bin_num in range(biomass_bins):
             # Filter data for this bin
             bin_data = vod_with_means[vod_with_means['biomass_bin'] == bin_num]
+            bin_mean = bin_data[band].mean()
             
-            if len(bin_data) < 10:  # Skip bins with very little data
-                print(f"Skipping bin {bin_num} for {band} due to insufficient data ({len(bin_data)} observations)")
-                continue
-            
-            # Calculate anomalies (WITHOUT OFFSET!)
+            # Subtracts long-term mean of sky-sector from the binned VOD values
             bin_data[f"{band}_anom"] = bin_data[band] - bin_data[f"{band}_mean"]
+            # populate the bins dict with the anomalies
+            bins[bin_num] = pd.DataFrame({
+                'Epoch': bin_data.index.get_level_values('Epoch'),
+                f"{band}_anom": bin_data[f"{band}_anom"],
+                f"{band}": bin_data[band],
+            })
+            
+            # adding bin-internal mean to the anomaly data
+            bin_data[f"{band}_anom"] = bin_data[f"{band}_anom"] + bin_mean
             
             # Temporal aggregation
             bin_ts = bin_data.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch'))[f"{band}_anom"].agg(
@@ -394,6 +401,20 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
             
             # Add to results with appropriate column name
             combined_results[f"{band}_anom_bin{bin_num}{suffix}"] = bin_ts
+            
+        # After processing individual bins, add a combined high-biomass bin (3-5)
+        # Collect dataframes from bins 3-5 (higher biomass)
+        high_biomass_bins = pd.concat([bins[i] for i in range(3, min(5 + 1, biomass_bins))])
+        high_biomass_mean = high_biomass_bins[band].mean()
+        high_biomass_bins[f"{band}_anom_mean"] = high_biomass_bins[f"{band}_anom"] + high_biomass_mean
+        
+        # Temporal aggregation for the combined high biomass bins
+        high_biomass_ts = high_biomass_bins[f"{band}_anom_mean"].groupby(
+            pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')
+        ).agg(agg_fun_ts)
+        
+        # Add to results with appropriate column name
+        combined_results[f"{band}_anom_bin3-5{suffix}"] = high_biomass_ts
         
         if plot_bins:
             # Calculate actual bin edges for visualization

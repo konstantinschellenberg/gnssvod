@@ -1385,7 +1385,93 @@ def plot_histogram(df, vars, percentiles=[25, 50, 75], bins=50, figsize=(8, 6), 
     return fig
 
 
-def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', offset_col='VOD1', precip_quantile=0.9,
+def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
+                               min_hours_per_day=12):
+    """
+    Characterize precipitation patterns and calculate daily mean VOD values.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD time series
+    dataset_col : str
+        Column name for the dataset to use for precipitation detection
+    precip_quantile : float
+        Quantile threshold for precipitation event detection (0-1)
+    min_hours_per_day : int
+        Minimum hours of data required per day for valid mean calculation
+
+    Returns:
+    --------
+    pandas.DataFrame
+        New columns: 'wetness_flag', 'VOD1_anom_masked', 'VOD1_daily'
+    """
+    result = pd.DataFrame(index=df.index)
+    
+    try:
+        
+        wetness = pd.read_csv(filepath_environmentaldata, index_col=0, parse_dates=True)["wet"]
+        # make wetness mask (if wetness == "yes", then True)
+        wetness_mask = (wetness == "yes").astype(int)
+        # First convert to datetime, then ensure all dates are set to midnight
+        wetness_mask.index = pd.to_datetime(wetness_mask.index, format='mixed', utc=True)
+        wetness_mask.name = 'wetness_flag'
+        # merge wetness mask on index (left on result)
+        result = result.join(wetness_mask, how='left')
+    except FileNotFoundError:
+        print(f"Warning: '{filepath_environmentaldata}' not found. Using default precipitation detection.")
+        # If wetness data is not available, initialize with zeros
+        result['wetness_flag'] = 0
+        
+        # Create flag for upper quantile (precipitation events) based on monthly thresholds
+        result['month'] = df.index.month  # Extract month information
+        
+        # Calculate and apply threshold for each month separately
+        for month in result['month'].unique():
+            # Get data for this month only
+            month_data = df.loc[df.index.month == month, dataset_col]
+            
+            if not month_data.empty:
+                # Calculate threshold for this month
+                month_threshold = month_data.quantile(precip_quantile)
+                
+                # Apply threshold to flag precipitation events for this month
+                month_mask = (df.index.month == month) & (df[dataset_col] > month_threshold)
+                result.loc[month_mask, 'wetness_flag'] = 1
+        # Convert to integer type and drop the temporary month column
+        result['wetness_flag'] = result['wetness_flag'].astype(int)
+        result.drop('month', axis=1, inplace=True)
+    
+    # Mask anomalies during precipitation events
+    result['VOD1_anom_masked'] = df[dataset_col].copy()
+    result.loc[result['wetness_flag'] == 1, 'VOD1_anom_masked'] = np.nan
+    
+    # Calculate required samples based on data frequency
+    time_delta = df.index[1] - df.index[0]
+    min_samples_per_day = min_hours_per_day * (3600 / pd.Timedelta(time_delta).total_seconds())
+    
+    # Calculate daily mean VOD
+    daily_counts = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).count()
+    daily_means = result['VOD1_anom_masked'].groupby(pd.Grouper(freq='D')).mean()
+    
+    # Identify days with insufficient data
+    insufficient_days = daily_counts < min_samples_per_day
+    daily_means[insufficient_days] = np.nan
+    
+    # Interpolate values for days with insufficient data
+    interpolated_daily = daily_means.interpolate(method='linear', limit=5)
+    
+    # Reindex back to original timestamp frequency
+    result['VOD1_daily'] = interpolated_daily.reindex(df.index, method='ffill')
+    
+    # Add mean VOD1 value if available
+    if 'VOD1' in df.columns:
+        result['VOD1_daily'] = result['VOD1_daily'] + df['VOD1'].mean()
+    
+    return result
+
+
+def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', precip_quantile=0.9,
                            interpolate_when_day_too_many_nan_in_day=False,
                            min_hours_per_day=12):
     """
@@ -1405,24 +1491,25 @@ def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', offset_col='VOD1
     Returns:
     --------
     pandas.DataFrame
-        New columns: 'precip_flag', 'VOD1_anom_masked', 'VOD1_daily'
+        New columns: 'wetness_flag', 'VOD1_anom_masked', 'VOD1_daily'
     """
     result = pd.DataFrame(index=df.index)
-
+    
     try:
         wetness = pd.read_csv(filepath_environmentaldata, index_col=0, parse_dates=True)["wet"]
         # make wetness mask (if wetness == "yes", then True)
         wetness_mask = (wetness == "yes").astype(int)
         # First convert to datetime, then ensure all dates are set to midnight
         wetness_mask.index = pd.to_datetime(wetness_mask.index, format='mixed', utc=True)
-        wetness_mask.name = 'precip_flag'
+        wetness_mask.name = 'wetness_flag'
         # merge wetness mask on index (left on result)
         result = result.join(wetness_mask, how='left')
+
     except FileNotFoundError:
         print(f"Warning: '{filepath_environmentaldata}' not found. Using default precipitation detection.")
         raise ValueError("Wetness data not found. Please provide a valid path to wetness data.")
         # If wetness data is not available, initialize with zeros
-        result['precip_flag'] = 0
+        result['wetness_flag'] = 0
     
         # Create flag for upper quantile (precipitation events) based on monthly thresholds
         result['month'] = df.index.month  # Extract month information
@@ -1438,20 +1525,24 @@ def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', offset_col='VOD1
                 
                 # Apply threshold to flag precipitation events for this month
                 month_mask = (df.index.month == month) & (df[dataset_col] > month_threshold)
-                result.loc[month_mask, 'precip_flag'] = 1
+                result.loc[month_mask, 'wetness_flag'] = 1
         # Convert to integer type and drop the temporary month column
-        result['precip_flag'] = result['precip_flag'].astype(int)
+        result['wetness_flag'] = result['wetness_flag'].astype(int)
         result.drop('month', axis=1, inplace=True)
     
+
     # Mask anomalies during precipitation events
     var_masked = f'{dataset_col}_masked'
+    
     result[var_masked] = df[dataset_col].copy()
-    result.loc[result['precip_flag'] == 1, var_masked] = np.nan
+    result.loc[result['wetness_flag'] == 1, var_masked] = np.nan
     
     # Calculate required samples based on data frequency
     time_delta = df.index[1] - df.index[0]
     min_samples_per_day = min_hours_per_day * (3600 / pd.Timedelta(time_delta).total_seconds())
     
+    # convert index to vizualization timezone
+    result.index = result.index.tz_convert(visualization_timezone)
     # Calculate daily mean VOD
     daily_counts = result[var_masked].groupby(pd.Grouper(freq='D')).count()
     daily_means = result[var_masked].groupby(pd.Grouper(freq='D')).mean()
@@ -1471,17 +1562,13 @@ def characterize_daily_vod(df, dataset_col='VOD1_anom_gps+gal', offset_col='VOD1
         result['VOD1_daily'] = daily_means.reindex(df.index)
         # Then forward fill only within each day, preserving NaN days
         result['VOD1_daily'] = result.groupby(result.index.date)['VOD1_daily'].transform('ffill')
-    
-    # result['VOD1_daily'].plot(title='Daily Mean VOD1 Anomaly', ylabel='VOD1 Anomaly', xlabel='Date');plt.show()
-   
-    # Add mean VOD1 value if available
-    if 'VOD1' in df.columns:
-        result['VOD1_daily'] = result['VOD1_daily'] + df[offset_col].mean()
+        
+    # tranform back to utc
+    result.index = result.index.tz_convert('UTC')
     
     return result
 
-def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=True,
-                              loess_frac=0.3, min_periods=10, **kwargs):
+def characterize_seasonals(df, sbas_bands=['VOD1_S33', 'VOD1_S35']):
     """
     Characterize weekly trends using SBAS data.
 
@@ -1501,11 +1588,9 @@ def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=
     Returns:
     --------
     pandas.DataFrame
-        New columns: normalized bands and 'VOD1_S_weekly'
+        New columns: normalized bands and 'VOD1_SBAS_anom'
     """
     import pandas as pd
-    import numpy as np
-    from statsmodels.nonparametric.smoothers_lowess import lowess
 
     result = pd.DataFrame(index=df.index)
     normalized_bands = []
@@ -1514,23 +1599,20 @@ def characterize_weekly_trends(df, sbas_bands=['VOD1_S33', 'VOD1_S35'], detrend=
     for band in sbas_bands:
         if band in df.columns:
             band_mean = df[band].mean()
-            normalized_band = f"{band}_norm"
+            normalized_band = f"{band}_anom"
             result[normalized_band] = df[band] - band_mean
             normalized_bands.append(normalized_band)
             
     common_mean = df[sbas_bands].mean(axis=1).mean()
     
     # Calculate mean of normalized SBAS bands for weekly trends
-    if normalized_bands:
-        result['VOD1_S_weekly'] = result[normalized_bands].mean(axis=1)
-        result['VOD1_S_weekly_addmean'] = result['VOD1_S_weekly'] + common_mean
-    else:
-        result['VOD1_S_weekly'] = np.nan
+    result['VOD1_SBAS_norm'] = result[normalized_bands].mean(axis=1)
+    result['VOD1_SBAS_anom'] = result['VOD1_SBAS_norm'] + common_mean
     
     return result
 
 def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
-                        window_hours=6, polyorder=2, apply_loess=True,
+                        window_hours=6, polyorder=2, detrending=True, smoothing=False,
                         loess_frac=0.1, **kwargs):
     """
     Process diurnal VOD descriptor with Savitzky-Golay filter and optional LOESS detrending.
@@ -1560,39 +1642,56 @@ def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
     if diurnal_col in df.columns:
         # Convert to numpy array for filtering, replacing NaNs with interpolation
         diurnal_data = df[diurnal_col].copy()
+        nan_mask = diurnal_data.isna()
         
-        # For any NaNs, fall back to hourly means
-        hourly_means = diurnal_data.groupby(df.index.hour).mean()
-        for hour, mean_value in hourly_means.items():
-            hour_mask = (df.index.hour == hour) & diurnal_data.isna()
-            diurnal_data.loc[hour_mask] = mean_value
+        # For any NaNs, use a more granular time grouping (hour + minute)
+        # Create a "minutes since midnight" value for grouping
         
-        # For any remaining NaNs, use linear interpolation
-        diurnal_data = diurnal_data.interpolate(method='linear', limit=6)
-        
-        # Determine window length based on data frequency
-        freq_minutes = pd.Timedelta(df.index[1] - df.index[0]).total_seconds() / 60
-        window_length = int(window_hours * 60 / freq_minutes)
-        
-        # Make window length odd (required by savgol_filter)
-        window_length = window_length + 1 if window_length % 2 == 0 else window_length
-        
+        # Filling nans only for loess filter!
+        minutes_since_midnight = df.index.hour * 60 + df.index.minute
+        # Group by this value to get more precise time-based means
+        time_means = diurnal_data.groupby(minutes_since_midnight).mean()
+        for time_mins, mean_value in time_means.items():
+            # Match the exact hour+minute combination
+            time_mask = ((df.index.hour * 60 + df.index.minute) == time_mins) & diurnal_data.isna()
+            diurnal_data.loc[time_mask] = mean_value
+            
         # Apply Savitzky-Golay filter
-        from scipy.signal import savgol_filter
-        filtered_values = savgol_filter(
-            diurnal_data.ffill().bfill().values,
-            window_length,
-            polyorder=polyorder
-        )
+        if smoothing:
+            # Determine window length based on data frequency
+            freq_minutes = pd.Timedelta(df.index[1] - df.index[0]).total_seconds() / 60
+            window_length = int(window_hours * 60 / freq_minutes)
+            
+            # Make window length odd (required by savgol_filter)
+            window_length = window_length + 1 if window_length % 2 == 0 else window_length
+            
+            from scipy.signal import savgol_filter
+            filtered_values = savgol_filter(
+                diurnal_data.ffill().bfill().values,
+                window_length,
+                polyorder
+            )
+        else:
+            inspect_df = pd.DataFrame({"diurnal": diurnal_data})
+            filtered_values = diurnal_data.values
         
-        if apply_loess:
+        if detrending:
             from statsmodels.nonparametric.smoothers_lowess import lowess
             # Apply LOWESS to detrend the filtered values
             lowess_smoothed = lowess(filtered_values, df.index, frac=loess_frac, it=0)
             # Subtract the LOWESS smoothed values from the filtered values
             filtered_values = filtered_values - lowess_smoothed[:, 1]
+            inspect_df["diurnal_detrended"] = filtered_values
+            
+        # if nan mask –> nan
+        plot = False
+        if plot:
+            # filter nan in inspect_df
+            inspect_df[nan_mask] = np.nan
+            inspect_df.plot(title="Diurnal VOD Processing", figsize=(10, 5)); plt.show()
         
         # Add filtered diurnal signal
+        filtered_values[nan_mask] = np.nan
         result['VOD1_diurnal'] = pd.Series(filtered_values, index=df.index)
     else:
         result['VOD1_diurnal'] = np.nan
@@ -1600,9 +1699,9 @@ def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
     return result
 
 
-def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_weekly',
+def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_SBAS_anom',
                              diurnal_col='VOD1_diurnal', methods=['add', 'mult', 'weighted', 'zscore'],
-                             weights={'weekly_trend': 0.3, 'diurnal': 0.4}, **kwargs):
+                             weights={'seasonal': 0.3, 'diurnal': 0.4}, **kwargs):
     """
     Create combined optimal VOD estimators using different arithmetic methods.
 
@@ -1630,13 +1729,13 @@ def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_week
     
     # Copy component columns with standard names
     result['trend'] = df[trend_col]
-    result['weekly_trend'] = df[weekly_col]
+    result['seasonal'] = df[weekly_col]
     result['diurnal'] = df[diurnal_col]
     
     # 1. Simple addition method
     if 'add' in methods:
         result['VOD_optimal_add'] = (
-                result['weekly_trend'].fillna(0) +
+                result['seasonal'].fillna(0) +
                 result['diurnal'].fillna(0) +
                 result['trend']
         )
@@ -1644,7 +1743,7 @@ def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_week
     # 2. Multiplication method
     if 'mult' in methods:
         result['VOD_optimal_mult'] = (
-                result['weekly_trend'].fillna(1) *
+                result['seasonal'].fillna(1) *
                 result['diurnal'].fillna(1) +
                 result['trend']
         )
@@ -1652,14 +1751,14 @@ def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_week
     # 3. Weighted mean method
     if 'weighted' in methods:
         weighted_sum = (
-                result['weekly_trend'].fillna(0) * weights['weekly_trend'] +
+                result['seasonal'].fillna(0) * weights['seasonal'] +
                 result['diurnal'].fillna(0) * weights['diurnal']
         )
         result['VOD_optimal_weighted'] = weighted_sum + result['trend']
     
     # 4. Z-score transformation method
     if 'zscore' in methods:
-        components = ['weekly_trend', 'diurnal']
+        components = ['seasonal', 'diurnal']
         z_transformed = {}
         means = {}
         stds = {}
@@ -1677,7 +1776,7 @@ def create_optimal_estimator(df, trend_col='VOD1_daily', weekly_col='VOD1_S_week
         
         # Sum the z-transformed components
         z_sum = (
-                z_transformed['weekly_trend'].fillna(0) +
+                z_transformed['seasonal'].fillna(0) +
                 z_transformed['diurnal'].fillna(0)
         )
         

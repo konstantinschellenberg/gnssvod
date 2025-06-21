@@ -28,42 +28,35 @@ if visualization_timezone:
 # -----------------------------------
 # vizualization
 
-# plot_vod_fingerprint(vod_ts, 'VOD1_trend', title="VOD1 Anomaly", save_dir=FIG)
-# optimized
-# plot_vod_fingerprint(vod_ts, 'Ns_t', title="Number of Satellites", save_dir=FIG)
-plot_vod_fingerprint(vod_ts, 'precip_flag')
-
 fingerprint = True  # Set to True to plot the fingerprint of the VOD data
 if fingerprint or plotall:
     # Plot the fingerprint of the VOD data
     
     # Trend
-    # plot_vod_fingerprint(vod_ts, 'VOD1_anom', title="VOD1 Anomaly", save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_anom_gps+gal', title="VOD1 Anomaly (GPS+Galileo)",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'precip_flag',save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_anom_masked', title="Masked VOD1 Anomaly (trend Events)",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_daily', title="Daily Mean VOD1 Anomaly",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom', title="VOD1 Anomaly", save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom_tp', title="VOD1 Anomaly", save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom_gps+gal', title="VOD1 Anomaly (GPS+Galileo)",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom_bin3-5_gps+gal', title="VOD1 Anomaly (GPS+Galileo)\n dense",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'wetness_flag',save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_daily', title="Daily Mean VOD1 Anomaly",save_dir = FIG)
     #
     # # seasonal VOD
-    # plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly', title="Weekly Mean SBAS VOD1",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly_addmean', title="Weekly Mean SBAS VOD1",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_S33', title="SBAS VOD1 S33",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_S35', title="SBAS VOD1 S35",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_SBAS_anom', title="Weekly Mean SBAS VOD1",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_S33', title="SBAS VOD1 S33",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_S35', title="SBAS VOD1 S35",save_dir = FIG)
     #
     # # diurnal VOD
-    # plot_vod_fingerprint(vod_ts, 'VOD1_anom_highbiomass', title="VOD1 Anomaly High Biomass",save_dir = FIG)
-    # plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly (Savitzky-Golay Filtered)",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_anom_bin3-5_gps+gal', title="VOD1 Anomaly (GPS+Galileo)\ndense",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal",save_dir = FIG)
     
     # Result
     plot_vod_fingerprint(vod_ts, 'VOD1_daily', title="Daily Mean VOD1 Anomaly",save_dir = FIG)
-    plot_vod_fingerprint(vod_ts, 'VOD1_anom_gps+gal', title="VOD1 Anomaly (GPS+Galileo)",save_dir = FIG)
-    plot_vod_fingerprint(vod_ts, 'VOD1_S_weekly_addmean', title="Weekly Mean SBAS VOD1")
-    plot_vod_fingerprint(vod_ts, 'VOD1_trend', title="Daily Mean VOD1 Anomaly")
+    plot_vod_fingerprint(vod_ts, 'VOD1_SBAS_anom', title="Weekly Mean SBAS VOD1")
     plot_vod_fingerprint(vod_ts, 'VOD1_diurnal', title="Diurnal VOD1 Anomaly")
     
     # Optimal VOD
     # 1) add
-    # plot_vod_fingerprint(vod_ts, 'VOD_optimal_add', title="Optimal VOD (Addition Method)",save_dir = FIG)
+    plot_vod_fingerprint(vod_ts, 'VOD_optimal_add', title="Optimal VOD (Addition Method)",save_dir = FIG)
     # # 2) multiplication
     # plot_vod_fingerprint(vod_ts, 'VOD_optimal_mult', title="Optimal VOD (Multiplication Method)",save_dir = FIG)
     # # 3) weighted mean
@@ -80,8 +73,9 @@ figsize = (4, 3)
 plot = True
 if plot or plotall:
     # Components
-    # plot_vod_timeseries(vod_ts, ['VOD1_S_weekly'], figsize=figsize, save_dir = FIG)
-    plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize, save_dir = FIG)
+    plot_vod_timeseries(vod_ts, ['VOD_optimal_zscore', 'VOD1_SBAS_anom', 'VOD1_daily', 'VOD1_diurnal'], figsize=figsize, save_dir = FIG,
+                        legend_loc="lower left")
+    # plot_vod_timeseries(vod_ts, ['VOD1_daily'], figsize=figsize, save_dir = FIG)
     # plot_vod_timeseries(vod_ts, ['VOD1_diurnal'], figsize=figsize, save_dir = FIG)
     
     # Result z-score
@@ -90,7 +84,7 @@ if plot or plotall:
 # -----------------------------------
 wvlt = False
 if wvlt or plotall:
-    analyze_wavelets(vod_ts, 'VOD1_S_weekly')
+    analyze_wavelets(vod_ts, 'VOD1_SBAS_anom')
     analyze_wavelets(vod_ts, 'VOD1_daily')
     analyze_wavelets(vod_ts, 'VOD1_diurnal')
     analyze_wavelets(vod_ts, 'VOD_optimal_zscore')
@@ -107,24 +101,24 @@ if diurnal or plotall:
                        show_std = False,
                        title="Diurnal Cycle of VOD1 Anomaly (Yitong)",
                       figsize=(4, 2.5), save_dir = FIG)
-    # plot_diurnal_cycle(vod_ts, ['VOD_optimal_zscore'],
-    #                        normalize=None, ncols=1,
-    #                        title="Optimal Diurnal Cycles",
-    #                       figsize=(4, 4), save_dir = FIG)
-    # plot_diurnal_cycle(vod_ts, ['VOD1_S_weekly'],
-    #                        normalize=None, ncols=1,
-    #                        title="SBAS diurnal Cycles",
-    #                       figsize=(4, 4), save_dir = FIG)
-    # plot_diurnal_cycle(vod_ts, ['VOD1_diurnal'],
-    #                        normalize=None, ncols=1,
-    #                        title="High Biomass diurnal Cycles",
-    #                       figsize=(4, 4), save_dir = FIG)
+    plot_diurnal_cycle(vod_ts, ['VOD_optimal_zscore'],
+                           normalize=None, ncols=1,
+                           title="Optimal Diurnal Cycles",
+                          figsize=(4, 4), save_dir = FIG)
+    plot_diurnal_cycle(vod_ts, ['VOD1_SBAS_anom'],
+                           normalize=None, ncols=1,
+                           title="SBAS diurnal Cycles",
+                          figsize=(4, 4), save_dir = FIG)
+    plot_diurnal_cycle(vod_ts, ['VOD1_diurnal'],
+                           normalize=None, ncols=1,
+                           title="High Biomass diurnal Cycles",
+                          figsize=(4, 4), save_dir = FIG)
 
-hist = False
+hist = True
 if hist or plotall:
     # Single histogram
     # Multiple histograms in a grid
-    plot_histogram(vod_ts, ['VOD_optimal_zscore', 'trend', 'weekly_trend', 'diurnal'],
+    plot_histogram(vod_ts, ['VOD_optimal_zscore', 'VOD1_SBAS_anom', 'VOD1_daily', 'VOD1_diurnal'],
                    bins=50, percentiles=[5, 95], save_dir = FIG)
 
 # -----------------------------------
