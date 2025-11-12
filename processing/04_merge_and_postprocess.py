@@ -82,11 +82,6 @@ if __name__ == "__main__":
         vod_data_list = [vod for vod in vod_data.values() if isinstance(vod, pd.DataFrame) and not vod.empty]
         if vod_data_list:
             
-            # todo: Use precipitation data to filter VOD data
-            
-            # -----------------------------------
-            # PREPARATIONS BEFORE MERGE
-            
             # -----------------------------------
             # MERGE
             vod_merged = pd.concat(vod_data_list, ignore_index=False)
@@ -116,7 +111,7 @@ if __name__ == "__main__":
             # filter dip-artifacts
             total_row = vod_merged.shape[0]
             percvod_mask = create_vod_percentile_mask(vod_merged, vod_column="VOD1_anom", min_percentile=min_vod_quantile,
-                                                      loess_frac=loess_frac)
+                                                      loess_frac=loess_frac, plot=True)
             vod_percentile_columns1 = filter_vod_columns(vod_merged, column_type='binned anom', exclude_sbas=True,
                                                          is_binned=True)
             vod_percentile_columns2 = filter_vod_columns(vod_merged, column_type='anom', exclude_sbas=True, is_binned=False)

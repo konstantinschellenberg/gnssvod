@@ -3,6 +3,7 @@
 
 from definitions import FIG
 from analysis.VODProcessor import VODProcessor
+from processing.helper import print_color
 from processing.settings import *
 from tqdm import tqdm
 
@@ -10,7 +11,8 @@ from tqdm import tqdm
 def process_single_interval(interval, iterate_params=False):
     """Process a single time interval with given parameters"""
     start_date, end_date = interval
-    print(f"Processing interval: {start_date} to {end_date}")
+    print("" + "="*50)
+    print_color(f"Processing interval: {start_date} to {end_date}")
     
     gnss_parameters_merged = gnss_parameters.copy()
     gnss_parameters_merged.update(gnss_parameters_iteratable)
@@ -38,7 +40,7 @@ def process_single_interval(interval, iterate_params=False):
 
 if __name__ == "__main__":
     if batch_run:
-        print(f"Running in batch mode for {len(time_intervals)} time intervals")
+        print_color(f"Running in batch mode for {len(time_intervals)} time intervals")
         for interval in tqdm(time_intervals, desc="Processing intervals"):
             if iterate_parameters:
                 print(f"Iterating parameters for {interval[0]} to {interval[1]}")

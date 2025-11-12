@@ -5,7 +5,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from analysis.calculate_anomaly_functions import ke_fun
-from analysis.calculate_anomalies import calculate_anomaly
+from analysis.calculate_anomalies import _calculate_anomaly
 import gnssvod as gv
 from processing.export_vod_funs import plot_hemi
 from processing.settings import *
@@ -19,6 +19,12 @@ if __name__ == '__main__':
     # make a toy data set of VOD data with SV and CellID and Epoch as indeces, CellID are associated with an azimuth and theta column. one vod variable
     # Create a sample DataFrame
     
+    """
+    Log:
+    - Pathlength not implemented anymore
+    
+    """
+    
     d = 20  # canopy height in meters
     angular_cutoff = 10  # degrees, for plotting purposes
     
@@ -30,7 +36,9 @@ if __name__ == '__main__':
         'SV': np.repeat(svs, len(dates) * len(dates)),
         'VOD1': np.random.normal(loc=1, scale=0.3, size=len(dates) * len(svs) * len(dates)),
         'Azimuth': np.random.rand(len(dates) * len(svs) * len(dates)) * 360,
-        'Elevation': np.random.rand(len(dates) * len(svs) * len(dates)) * 90
+        'Elevation': np.random.rand(len(dates) * len(svs) * len(dates)) * 90,
+        'S1_grn': np.random.normal(loc=45, scale=5, size=len(dates) * len(svs) * len(dates)),
+        'S1_ref': np.random.normal(loc=50, scale=5, size=len(dates) * len(svs) * len(dates)),
     }
     
     vod = pd.DataFrame(vod_dict)
@@ -67,12 +75,12 @@ if __name__ == '__main__':
     
     # viz
     vod_cell.set_index(['Epoch', 'SV'], inplace=True)
-    _, avg = calculate_anomaly(vod_cell, ["ke"], 60)  # Example temporal resolution in minutes
+    _, avg = _calculate_anomaly(vod_cell, ["ke", "VOD1"], 60, make_ke=False)  # Example temporal resolution in minutes
 
     # -----------------------------------
     # Histograms
     avg.plot(kind="hist", y="ke_mean", bins=30, title="Histogram of ke values"); plt.show()
-    avg.plot(kind="hist", y="pathlength_mean", bins=30, title="Histogram of pathlength values"); plt.show()
+    # avg.plot(kind="hist", y="pathlength_mean", bins=30, title="Histogram of pathlength values"); plt.show()
     avg.plot(kind="hist", y="VOD1_mean", bins=30, title="Histogram of VOD1 values"); plt.show()
 
     # -----------------------------------
@@ -83,28 +91,28 @@ if __name__ == '__main__':
     axes[0, 0].set_title("VOD vs Extinction Coefficient")
     axes[0, 0].grid(True, alpha=0.3)
     
-    # Normalize pathlength by canopy height for better interpretation
-    avg["path_per_d"] = avg["pathlength_mean"] / d
-    
-    # ke vs normalized pathlength
-    avg.plot(kind="scatter", x="ke_mean", y="path_per_d", s=3, ax=axes[0, 1])
-    axes[0, 1].set_title("Extinction Coefficient vs Normalized Pathlength")
-    axes[0, 1].set_ylabel(f"Pathlength / Canopy Height")
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # VOD vs normalized pathlength
-    avg.plot(kind="scatter", x="VOD1_mean", y="path_per_d", s=3, ax=axes[1, 0])
-    axes[1, 0].set_title("VOD vs Normalized Pathlength")
-    axes[1, 0].set_ylabel(f"Pathlength / Canopy Height")
-    axes[1, 0].grid(True, alpha=0.3)
+    # # Normalize pathlength by canopy height for better interpretation
+    # avg["path_per_d"] = avg["pathlength_mean"] / d
+    #
+    # # ke vs normalized pathlength
+    # avg.plot(kind="scatter", x="ke_mean", y="path_per_d", s=3, ax=axes[0, 1])
+    # axes[0, 1].set_title("Extinction Coefficient vs Normalized Pathlength")
+    # axes[0, 1].set_ylabel(f"Pathlength / Canopy Height")
+    # axes[0, 1].grid(True, alpha=0.3)
+    #
+    # # VOD vs normalized pathlength
+    # avg.plot(kind="scatter", x="VOD1_mean", y="path_per_d", s=3, ax=axes[1, 0])
+    # axes[1, 0].set_title("VOD vs Normalized Pathlength")
+    # axes[1, 0].set_ylabel(f"Pathlength / Canopy Height")
+    # axes[1, 0].grid(True, alpha=0.3)
     
     # Elevation vs VOD
-    avg.plot(kind="scatter", x="Elevation_mean", y="VOD1_mean", s=3, ax=axes[1, 1])
-    axes[1, 1].set_title("Elevation vs VOD")
-    axes[1, 1].grid(True, alpha=0.3)
-    plt.savefig(FIG / "scatter_vod_ke_pathlength.png", dpi=300)
-    plt.tight_layout()
-    plt.show()
+    # avg.plot(kind="scatter", x="Elevation_mean", y="VOD1_mean", s=3, ax=axes[1, 1])
+    # axes[1, 1].set_title("Elevation vs VOD")
+    # axes[1, 1].grid(True, alpha=0.3)
+    # plt.savefig(FIG / "scatter_vod_ke_pathlength.png", dpi=300)
+    # plt.tight_layout()
+    # plt.show()
     
     # -----------------------------------
     # anomaly calculation
@@ -112,7 +120,7 @@ if __name__ == '__main__':
     band_ids = ['VOD1']  # Example band IDs
     temporal_resolution = 60  # Example temporal resolution in minutes
     # Call the function
-    vod_ts_combined, vod_avg = calculate_anomaly(vod_cell, band_ids, temporal_resolution, angular_cutoff=10)
+    vod_ts_combined, vod_avg = _calculate_anomaly(vod_cell, band_ids, temporal_resolution, angular_cutoff=10)
     
     # -----------------------------------
     # Plot hemispheric distributions of VOD, extinction coefficient, and path length
@@ -125,6 +133,6 @@ if __name__ == '__main__':
     plot_hemi(avg, hemi.patches(), "ke_mean",
               title="Extinction Coefficient", clim="auto", angular_cutoff=angular_cutoff)
 
-    # Plot the hemispheric distribution of path length
-    plot_hemi(avg, hemi.patches(), "pathlength_mean",
-              title="Path Length (m)", clim="auto", angular_cutoff=angular_cutoff)
+    # # Plot the hemispheric distribution of path length
+    # plot_hemi(avg, hemi.patches(), "pathlength_mean",
+    #           title="Path Length (m)", clim="auto", angular_cutoff=angular_cutoff)

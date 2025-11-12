@@ -53,31 +53,31 @@ pos = ell2cart(**moflux_coordinates)
 
 # -----------------------------------
 # SETTINGS (user) – 02_gather_stations.py
+# -----------------------------------
 
 timeintervals_periods = None  # None or int. If None, it will be calculated. If int, it will be used as is.
 timeintervals_freq = '1h'  # hourly file saving is more efficient
 timeintervals_closed = 'left'
 
 # -----------------------------------
-# SETTINGS (user) – 03_export_vod.py
+# SETTINGS (user) – 03_calculate_vodmetrics_tempaggregation.py
+# -----------------------------------
 
 # general settings
-batch_run = True  # run all years in batch mode
-time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)
-"""
-Runs:
+batch_run = False  # run all years in batch mode
 
-time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
-time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)
+time_intervals = create_time_intervals('2024-04-03', '2024-04-04', 1)
+# time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
+# time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)  # standard
 
-"""
+single_file_interval = ('2024-04-03', '2024-04-04')  # optional, if not batch_run
 
 # set to True to iterate over parameters (angular_resolution, angular_cutoff, temporal_resolution)
-iterate_parameters = False
+iterate_parameters = False  # not verified as of Nov 25
 
-# quick plot of the results
-plot_results = True
-overwrite_vod_processing = False  # overwrite existing VOD processing files
+# -----------------------------------
+# Flow settings
+overwrite_vod_processing = False  # Overwrite existing VOD processing files – NON-DEBUGGABLE RIGHT NOW!
 overwrite_anomaly_processing = True  # overwrite existing anomaly processing files
 add_sbas_position_manually = True  # add SBAS position to VOD files
 
@@ -94,7 +94,7 @@ z0 = 1.0  # height of the ground receiver
 make_ke = False  # whether to calculate ke
 
 # for VOD calculation (must be lists)
-angular_resolution = 2  # degrees
+angular_resolution = 1  # degrees
 temporal_resolution = 30  # minutes  # change from 30
 angular_cutoff = 30 # changed from 30
 agg_fun_vodoffset = "median"  # aggregation function for VOD offset added to the anomaly, can be "mean" or "median"
@@ -102,31 +102,21 @@ agg_fun_ts = "median"   # aggregation function for time series
 agg_fun_satincell = "median"  # Konstantin's aggregation function for satellite in cell, can be "mean" or "median"
 eval_num_obs_tps = True
 
-gnss_parameters_iteratable = {
-    'angular_resolution': angular_resolution,  # must be a list
-    'angular_cutoff': angular_cutoff,
-    'temporal_resolution': temporal_resolution,
-}
-
-gnss_parameters = {
-    'make_ke': make_ke,  # whether to calculate ke
-    'canopy_height': canopy_height,
-    'z0': z0,
-    'overwrite': overwrite_anomaly_processing,  # overwrite existing VOD processing files
-    "agg_fun_vodoffset": agg_fun_vodoffset,
-    "agg_fun_ts": agg_fun_ts,  # aggregation function for time series
-    "agg_fun_satincell": agg_fun_satincell,  # Konstantin's aggregation function for satellite in cell
-    "eval_num_obs_tps": eval_num_obs_tps,  # whether to evaluate number of observations for TPS
-}
+# -----------------------------------
+# quick plot of the results
+plot_results = True
+plotting_hemi = True
+plotting_hemi_var = "VOD1_mean"  # variable to plot in the hemisphere plot
 
 # ALWAYS CALC BOTH
 # anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
 
 # -----------------------------------
 # SETTINGS (user) – 04_merge_years.py
+# -----------------------------------
 
 # settings for merging years (these criteria must match all datasets)
-angular_resolution = 2
+angular_resolution = 1
 temporal_resolution = 30
 angular_cutoff = 30
 search_agg_fun_ts = "median"
@@ -136,10 +126,9 @@ filter_anomalies = False  # filter anomalies in time series
 
 # VOD "optimized" settings
 precip_quantile = None # NOT USED WHEN `filter_anomalies`. cutoff for precipitation quantile to filter dip-artifacts, e.g. 0.05 for 5% quantile
-minimum_nsat = 12  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
-min_vod_quantile = 0.05  # def: 0.05. cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
-loess_frac = 0.1  # smoothing function for dip detection
-detrend_weekly = False
+minimum_nsat = 10  #  def: 15. minimum number of satellites in view on average in a time interval to be considered valid
+min_vod_quantile = 0.02  # def: 0.05. cutoff for VOD1_anom to filter dip-artifacts, e.g. 0.05 for 5% quantile
+loess_frac = 0.1  # 0.1 smoothing function for dip detection
 mask_wetness_globally = True  # using the wetness data from MOFLUX to mask all VOD data
 plot = True  # plot intermediate results
 
@@ -147,6 +136,7 @@ filepath_environmentaldata = ENVDATA / "tb_interval_20250529_160122.csv"  # path
 
 # -----------------------------------
 # SETTINGS (user) – 05_inspect_exported_vodfiles.py
+# -----------------------------------
 
 # todo: will be rename to be specific
 vod_file = ARD / "combined_vod_data_MOz_2024_to_2024.parquet"
@@ -154,7 +144,7 @@ vod_file = ARD / "combined_vod_data_MOz_2024_to_2024.parquet"
 # combined_vod_data_MOz_2024_to_2024.parquet
 
 # subset must be in tz
-# time_subset = ('2023-05-15', "2024-12-30")  # ("2024-01-01", "2024-12-30")
+time_subset = ('2024-04-01', "2024-11-01")  # ("2024-01-01", "2024-12-30")
 
 # -----------------------------------
 # settings (static)
@@ -210,7 +200,7 @@ search_horizont = {
 # SBAS Identifiers
 # note that the position of the satellite for now need to be manually looked up...
 
-sbas_ident = {
+SBAS_IDENT = {
     "S31": {
         "system": "WAAS",
         "Azimuth": 216.5-360,  # Adjusted for azimuth range [-180, 180]
@@ -235,4 +225,23 @@ sbas_ident = {
         "Elevation": 8.9,  # too low!
         "PRN": "148",
     },
+}
+
+
+
+gnss_parameters_iteratable = {
+    'angular_resolution': angular_resolution,  # must be a list
+    'angular_cutoff': angular_cutoff,
+    'temporal_resolution': temporal_resolution,
+}
+
+gnss_parameters = {
+    'make_ke': make_ke,  # whether to calculate ke
+    'canopy_height': canopy_height,
+    'z0': z0,
+    'overwrite': overwrite_anomaly_processing,  # overwrite existing VOD processing files
+    "agg_fun_vodoffset": agg_fun_vodoffset,
+    "agg_fun_ts": agg_fun_ts,  # aggregation function for time series
+    "agg_fun_satincell": agg_fun_satincell,  # Konstantin's aggregation function for satellite in cell
+    "eval_num_obs_tps": eval_num_obs_tps,  # whether to evaluate number of observations for TPS
 }

@@ -311,6 +311,7 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
     pandas.DataFrame
         Time series of VOD anomalies for each biomass bin with Epoch as index
     """
+    pd.options.mode.chained_assignment = None
     agg_fun_ts = kwargs.get('agg_fun_ts', 'mean')
     suffix = kwargs.get('suffix', '')
     plot_bins = kwargs.get('plot_bins', False)  # whether to plot the bin histograms for visualization
@@ -377,6 +378,7 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
         vod_with_means = vod_with_bins.join(vod_avg[[f"{band}_mean"]], on='CellID')
         
         bins = {}
+        # -----------------------------------
         # Calculate anomalies for each bin
         for bin_num in range(biomass_bins):
             # Filter data for this bin
@@ -384,7 +386,9 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
             bin_mean = bin_data[band].mean()
             
             # Subtracts long-term mean of sky-sector from the binned VOD values
-            bin_data[f"{band}_anom"] = bin_data[band] - bin_data[f"{band}_mean"]
+            # mute SettingWithCopyWarning
+            bin_data.loc[:, f"{band}_anom"] = bin_data[band] - bin_data[f"{band}_mean"]
+                
             # populate the bins dict with the anomalies
             bins[bin_num] = pd.DataFrame({
                 'Epoch': bin_data.index.get_level_values('Epoch'),
@@ -393,8 +397,8 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
             })
             
             # adding bin-internal mean to the anomaly data
-            bin_data[f"{band}_anom"] = bin_data[f"{band}_anom"] + bin_mean
-            
+            bin_data.loc[:, f"{band}_anom"] = bin_data[f"{band}_anom"] + bin_mean
+                
             # Temporal aggregation
             bin_ts = bin_data.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch'))[f"{band}_anom"].agg(
                 agg_fun_ts)

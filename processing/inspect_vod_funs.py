@@ -60,18 +60,23 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     # transform timezone to visualization timezone
     if visualization_timezone:
         if isinstance(df.index, pd.DatetimeIndex):
-            # Convert index to visualization timezone
             df.index = df.index.tz_convert(visualization_timezone)
         else:
             raise ValueError("DataFrame index must be a DatetimeIndex to convert timezone")
-    
-    # Ensure 'hod' is in the dataframe
-    df['hod'] = df.index.hour
+    else:
+        pass
 
-    # Validate normalization parameter
-    valid_normalizations = ['daily', 'zscore', None]
-    if normalize not in valid_normalizations:
-        raise ValueError(f"normalize must be one of {valid_normalizations}")
+    # Instead of using only the hour, compute continuous time-of-day (in hours)
+    df['tod'] = df.index.hour + df.index.minute/60 + df.index.second/3600
+
+    # Determine bin width from data resolution (in hours)
+    if len(df.index) > 1:
+        freq_minutes = (df.index[1] - df.index[0]).total_seconds() / 60
+    else:
+        freq_minutes = 60
+    bin_width = freq_minutes / 60.0  # in hours
+    bins = np.arange(0, 24 + bin_width, bin_width)
+    df['tod_bin'] = pd.cut(df['tod'], bins=bins, include_lowest=True)
     
     # Convert single variable names to tuples if needed
     if vars and not all(isinstance(v, (list, tuple)) for v in vars):
@@ -82,8 +87,6 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     
     # Create figure and axes
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
-    
-    # Ensure axes is always iterable
     if nrows * ncols == 1:
         axes = np.array([axes])
     axes = axes.flatten()
@@ -95,81 +98,58 @@ def plot_diurnal_cycle(df, vars, normalize=None, figsize=(8, 6), ncols=2,
     for i, var_tuple in enumerate(vars):
         if i >= len(axes):
             break
-        
         ax = axes[i]
-        
-        # For each variable in the tuple
         for j, var in enumerate(var_tuple):
             if var not in df.columns:
                 print(f"Warning: Variable '{var}' not found in DataFrame, skipping.")
                 continue
-            
-            # Get color for this variable
             color = colormap(j % colormap.N)
             
-            # Group by hour of day
-            hourly_data = df.groupby('hod')[var].agg(['mean', 'std']).reset_index()
+            # Group by the bin for full resolution time-of-day and compute bin centers
+            hourly_data = df.groupby('tod_bin')[var].agg(['mean', 'std']).reset_index()
+            hourly_data['tod'] = hourly_data['tod_bin'].apply(lambda interval: interval.mid)
             
             # Apply normalization if requested
             if normalize == 'daily':
-                # Normalize by daily mean
                 daily_mean = df[var].mean()
                 hourly_data['mean'] = hourly_data['mean'] / daily_mean
                 hourly_data['std'] = hourly_data['std'] / daily_mean
                 ylabel = 'Normalized Value (Daily Mean = 1)'
             elif normalize == 'zscore':
-                # Z-score normalization
                 var_mean = df[var].mean()
                 var_std = df[var].std()
                 hourly_data['mean'] = (hourly_data['mean'] - var_mean) / var_std
                 hourly_data['std'] = hourly_data['std'] / var_std
                 ylabel = 'Standardized Value (Z-Score)'
             else:
-                # No normalization
                 ylabel = 'Value'
             
-            # Plot mean line
-            ax.plot(hourly_data['hod'], hourly_data['mean'],
+            # Plot mean line using the bin centers
+            ax.plot(hourly_data['tod'], hourly_data['mean'],
                     label=var, color=color, linewidth=2)
-            
-            
-            show_std = kwargs.get('show_std', True)
-            if show_std:
-                # Plot standard deviation band
-                ax.fill_between(hourly_data['hod'],
+            if kwargs.get('show_std', True):
+                ax.fill_between(hourly_data['tod'],
                                 hourly_data['mean'] - hourly_data['std'],
                                 hourly_data['mean'] + hourly_data['std'],
                                 color=color, alpha=0.2)
-        
-        # Set labels and title for subplot
-        ax.set_xlabel('Hour of Day')
-        # ax.set_ylabel(ylabel)
-        
-        # Create subplot title from variable names
+        ax.set_xlabel('Time of Day')
+        # Optionally set ylabel here if desired: ax.set_ylabel(ylabel)
         subplot_title = "Diurnal Cycle of " + ", ".join(var_tuple)
         ax.set_title(subplot_title)
-        
-        # Styling
         ax.grid(True, linestyle='--', alpha=0.7)
-        ax.set_xlim(0, 23)
+        ax.set_xlim(0, 24)
         ax.set_xticks(np.arange(0, 24, 3))
-        # ax.legend(loc='best', fontsize='small')
     
-    # Hide unused subplots
     for j in range(len(vars), len(axes)):
         axes[j].set_visible(False)
     
-    # Set overall title if provided
     if title:
         fig.suptitle(title, fontsize=16)
-        plt.subplots_adjust(top=0.92)  # Make room for title
+        plt.subplots_adjust(top=0.92)
     
     plt.tight_layout()
-    
-    # Save figure if filename is provided
     if filename:
         plt.savefig(save_dir / filename, dpi=300, bbox_inches='tight')
-    
     plt.show()
     return fig
 
@@ -1683,6 +1663,18 @@ def process_diurnal_vod(df, diurnal_col='VOD1_anom_highbiomass',
             filtered_values = filtered_values - lowess_smoothed[:, 1]
             inspect_df["diurnal_detrended"] = filtered_values
             
+            # plot the smoothing and detrending and original data
+            # from matplotlib import pyplot as plt
+            # fig, ax =  plt.subplots(figsize=(6,3))
+            # ax.plot(df.index, diurnal_data, label='Original', color='grey', alpha=0.5)
+            # ax.plot(df.index, filtered_values, label='Filtered', color='blue', linewidth=1.5)
+            # ax.plot(df.index, lowess_smoothed[:, 1], label='LOWESS Smoothed', color='orange', linewidth=1.5)
+            # ax.set_title("Diurnal VOD Processing")
+            # ax.set_xlabel("Date")
+            # ax.set_ylabel("VOD1 Anomaly")
+            # ax.legend()
+            # plt.show()
+            
         # if nan mask –> nan
         plot = False
         if plot:
@@ -2138,3 +2130,4 @@ def create_vod_trend(df, vod_column, frac=0.1, it=3, **kwargs):
     result = result.interpolate(method='linear', limit_direction='both', limit=24)
     
     return result
+

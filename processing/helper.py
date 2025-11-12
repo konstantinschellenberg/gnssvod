@@ -42,3 +42,27 @@ def create_time_intervals(start_date, end_date, subset_months=6):
     
     return intervals
 
+def print_color(text, color='green'):
+    """
+    Print text in specified color in the terminal.
+
+    Args:
+        text (str): Text to print
+        color (str): Color name (e.g., 'red', 'green', 'blue', 'yellow', 'cyan', 'magenta', 'white')
+    """
+    color_codes = {
+        'black': '\033[30m',
+        'red': '\033[31m',
+        'green': '\033[32m',
+        'yellow': '\033[33m',
+        'blue': '\033[34m',
+        'magenta': '\033[35m',
+        'cyan': '\033[36m',
+        'white': '\033[37m',
+        'reset': '\033[0m',
+    }
+    
+    color_code = color_codes.get(color.lower(), color_codes['reset'])
+    reset_code = color_codes['reset']
+    
+    print(f"{color_code}{text}{reset_code}")

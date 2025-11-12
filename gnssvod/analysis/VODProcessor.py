@@ -16,8 +16,9 @@ from definitions import DATA
 import gnssvod as gv
 from gnssvod.io.preprocess import get_filelist
 from processing.filepattern_finder import create_time_filter_patterns, filter_files_by_date
-from processing.settings import bands, sbas_ident, station, moflux_coordinates, add_sbas_position_manually
-from analysis.calculate_anomalies import calculate_anomaly
+from processing.helper import print_color
+from processing.settings import bands, SBAS_IDENT, station, moflux_coordinates, add_sbas_position_manually
+from analysis.calculate_anomalies import _calculate_anomaly
 
 
 # Process files individually and concatenate the DataFrames
@@ -38,7 +39,7 @@ def process_file(file_path):
         return pd.DataFrame()
 
 
-def replace_sbas_coordinates(vod, sbas_ident):
+def _replace_sbas_coordinates(vod, sbas_ident):
     """
     Replace Azimuth and Elevation values for SBAS satellites with fixed values.
 
@@ -174,6 +175,9 @@ class VODProcessor:
         print(f"Processing data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         
     def _concat_nc_files(self, filepattern, interval, n_workers=15):
+        """
+        WARNING: This function cannot be debugged currently because of Dask client initialization.
+        """
         from dask.distributed import Client, LocalCluster
         import concurrent.futures
         import os.path
@@ -248,7 +252,7 @@ class VODProcessor:
         }
         self.vod_processing_params.update(kwargs)
         
-        print(f"Processing VOD data for {self.station}")
+        print_color(f"(1/2) Processing VOD data for {self.station}", "magenta")
         
         # Create a unique filename based on parameters
         start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
@@ -275,7 +279,7 @@ class VODProcessor:
         –> Consider commenting it out in self._concat_nc_files
         """
 
-        print(f"Concatenating NC files matching pattern: {self.pattern}")
+        print_color(f"Concatenating NC files matching pattern: {self.pattern}", "yellow")
         # This will return a Dask DataFrame
         df_combind_ncs = self._concat_nc_files(
             filepattern=self.pattern,
@@ -286,7 +290,7 @@ class VODProcessor:
         # -----------------------------------
         # Calculate VOD
         
-        print("Calculating VOD...")
+        print_color(f"Calculating VOD, pairing:{self.pairings}, bands:{self.bands}", "yellow")
         vod = gv.calc_vod(
             df_combind_ncs,
             self.pairings,
@@ -304,8 +308,7 @@ class VODProcessor:
         return None
     
     
-    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, overwrite=False,
-                        **kwargs):
+    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, overwrite=False, **kwargs):
         """
         Calculate VOD anomalies with multiple parameter combinations in parallel.
         Uses saved files if they exist and overwrite=False.
@@ -347,11 +350,6 @@ class VODProcessor:
         self.anomaly_params = kwargs.copy()
         self.anomaly_params.update({"band_ids": self.band_ids})
 
-        print("++++++++++++++++++++++++++++++++")
-        print(f"Processing VOD data for {self.station} with "
-              f"{ar*ac*tr} "
-              f"parameter combinations")
-        
         # if not len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution) == 1 –> raise
         if ar*ac*tr == 0:
             raise ValueError("At least one parameter must be provided for angular_resolution, ")
@@ -371,13 +369,9 @@ class VODProcessor:
         filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
         file_path = self.temp_dir / filename
         
-        print(f"Interval: {self.time_interval}, ")
         # Check if file exists and overwrite flag
-        if file_path.exists() and not overwrite:
-            print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}. Loading from disk.")
-            result_paths.append(str(file_path))
-        else:
-            # Process this parameter combination immediately
+        if not file_path.exists() and overwrite:
+            """Process VOD anew"""
             print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
             params = self.anomaly_params.copy()
             currrent_updates = {
@@ -389,11 +383,46 @@ class VODProcessor:
             # Update with kwargs
             params.update(currrent_updates)
             
-            # Process the parameter combination directly
-            result = self._run_parameter_combination(params)
-            if result is not None:
-                result_paths.append(result)
-        
+            print(f"Processing parameter combination: {params}")
+            # Load VOD data from disk for this process
+            temp_dir = DATA / 'temp'
+            anomaly_file_path = temp_dir / params['vod_anomaly_filename']
+            vod_file_path = temp_dir / (self.vod_filename + ".parquet")
+            
+            # read parquet as pandas DataFrame
+            vod = pd.read_parquet(vod_file_path)
+            vod.set_index('SV', inplace=True, append=True)  # Ensure 'Epoch' is the index
+            
+            # add position of sbas satellites (why did they got lost?)
+            if add_sbas_position_manually:
+                print("Replacing SBAS coordinates with fixed values...")
+                vod = _replace_sbas_coordinates(vod, SBAS_IDENT)
+            
+            # Build hemispheric grid
+            hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
+            
+            # Classify VOD into grid cells
+            print("Adding CellID to VOD data...")
+            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)  # Drop position without data
+            
+            # Calculate anomalies (now accepts pandas DataFrame directly)
+            print("Calculating anomalies...")
+            vod_ts_combined, vod_avg = _calculate_anomaly(vod=vod_with_cells, **params)
+            
+            # Add parameter columns
+            vod_ts_combined['angular_resolution'] = params['angular_resolution']
+            vod_ts_combined['angular_cutoff'] = params['angular_cutoff']
+            vod_ts_combined['temporal_resolution'] = params['temporal_resolution']
+            
+            # Save to disk
+            vod_ts_combined.to_pickle(anomaly_file_path)
+            print(f"Saved anomaly results to {anomaly_file_path}")
+            result_paths.append(anomaly_file_path)
+        else:
+            """Loading existing results"""
+            print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}, Interval={self.time_interval}, loading from disk.")
+            result_paths.append(str(file_path))
+            
         # Combine results into a single xarray dataset
         self.results = self._combine_results(result_paths)
         
@@ -442,11 +471,8 @@ class VODProcessor:
             
             # Set 'datetime' as the index again
             df = df.set_index('datetime')
-
             metadata = self._create_metadata()
-            
             start, end = pd.to_datetime(self.time_interval[0]), pd.to_datetime(self.time_interval[1])
-            
             outname = f"{filename}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_{metadata["metadata_id"]}"
             
             # Add .nc extension if not already present
@@ -578,56 +604,6 @@ class VODProcessor:
         metadata["metadata_id"] = f"{hash(frozenset(str(metadata.items()))):x}"
         
         return metadata
-    
-    def _run_parameter_combination(self, params):
-        """
-        Process a single parameter combination and save results to disk.
-        """
-        try:
-            print(f"Processing parameter combination: {params}")
-            # Load VOD data from disk for this process
-            temp_dir = DATA / 'temp'
-            anomaly_file_path = temp_dir / params['vod_anomaly_filename']
-            vod_file_path = temp_dir / (self.vod_filename + ".parquet")
-            
-            # read parquet as pandas DataFrame
-            vod = pd.read_parquet(vod_file_path)
-            vod.set_index('SV', inplace=True, append=True)  # Ensure 'Epoch' is the index
-            
-            # add position of sbas satellites (why did they got lost?)
-            if add_sbas_position_manually:
-                print("Replacing SBAS coordinates with fixed values...")
-                vod = replace_sbas_coordinates(vod, sbas_ident)
-                
-            # Build hemispheric grid
-            hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
-            
-            # Classify VOD into grid cells
-            print("Adding CellID to VOD data...")
-            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)  # Drop position without data
-            
-            # Calculate anomalies (now accepts pandas DataFrame directly)
-            print("Calculating anomalies...")
-            vod_ts_combined, vod_avg = calculate_anomaly(vod=vod_with_cells, **params)
-            
-            # Add parameter columns
-            vod_ts_combined['angular_resolution'] = params['angular_resolution']
-            vod_ts_combined['angular_cutoff'] = params['angular_cutoff']
-            vod_ts_combined['temporal_resolution'] = params['temporal_resolution']
-            
-            # Save to disk
-            vod_ts_combined.to_pickle(anomaly_file_path)
-            print(f"Saved anomaly results to {anomaly_file_path}")
-            
-            # todo: write out vod_avg here!
-            
-            return str(anomaly_file_path)
-        
-        except Exception as e:
-            print(f"Error processing combination {params}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
     
     def _combine_results(self, result_paths):
         """

@@ -7,9 +7,10 @@ from analysis.calculate_anomaly_functions import calculate_biomass_binned_anomal
     create_aggregation_dict, vod_fun
 from gnssvod import hemibuild
 from processing.export_vod_funs import plot_hemi
+from processing.settings import angular_cutoff, angular_resolution, plotting_hemi, plotting_hemi_var
 
 
-def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
+def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
     """
     Calculate VOD anomalies using both methods.
     
@@ -119,8 +120,14 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
     
     # vod_con1 = vod[vod.index.get_level_values('SV').str.startswith('G')]
     # vod_ts_con1 = calculate_sv_specific_anomalies(vod_con1, band_ids, temporal_resolution, suffix="gps", **kwargs)
-    vod_con2 = vod[vod.index.get_level_values('SV').str.startswith(('G', 'E'))]  # GPS + GALILEO
-    vod_ts_con2 = calculate_sv_specific_anomalies(vod_con2, band_ids, temporal_resolution, suffix="gps+gal", **kwargs)
+    
+    vod_gps_gal = vod[vod.index.get_level_values('SV').str.startswith(('G', 'E'))]
+    if vod_gps_gal.empty:
+        pass
+    else:
+        vod_ts_con2 = calculate_sv_specific_anomalies(vod_gps_gal, band_ids, temporal_resolution, suffix="gps+gal",
+                                                      **kwargs)
+    # filter where SV index starts with 'E' (GALILEO)
   
     # -----------------------------------
     # NEW FEATURES
@@ -204,16 +211,18 @@ def calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
     
     vod_ds_combined = (vod_ts_1.join(vod_ts_2).
                        join(ds3).
-                       join(vod_ts_sbas).
-                       join(vod_ts_con2))
+                       join(vod_ts_sbas))
+    
+    if not vod_gps_gal.empty:
+        vod_ds_combined = vod_ds_combined.join(vod_ts_con2)
     
     if calculate_biomass_bins:
         vod_ds_combined = vod_ds_combined.join(vod_ts_anom_biomass_gps)
     
     # -----------------------------------
-    ploting_hemi = False
-    if ploting_hemi:
-        hemi = hemibuild(2, 10)
-        plot_hemi(vod_avg, hemi.patches(), var="VOD1_count", clim="auto", title="CellID Observation Counts", )
+    if plotting_hemi:
+        hemi = hemibuild(angular_resolution, angular_cutoff)
+        plot_hemi(vod_avg, hemi.patches(), var=plotting_hemi_var, clim="auto", title=f"Skyplot {plotting_hemi_var}",
+                  angular_cutoff=angular_cutoff)
         
     return (vod_ds_combined, vod_avg)
