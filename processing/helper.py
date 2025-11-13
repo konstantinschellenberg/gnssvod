@@ -66,3 +66,14 @@ def print_color(text, color='green'):
     reset_code = color_codes['reset']
     
     print(f"{color_code}{text}{reset_code}")
+    
+def check_instance(param, param_name, expected_type):
+    if isinstance(param, list):
+        for p in param:
+            if not isinstance(p, expected_type):
+                raise ValueError(f"All elements in {param_name} must be of type {expected_type.__name__}")
+        return param
+    else:
+        if not isinstance(param, expected_type):
+            raise ValueError(f"{param_name} must be of type {expected_type.__name__}")
+        return param

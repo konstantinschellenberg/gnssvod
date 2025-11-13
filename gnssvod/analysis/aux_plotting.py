@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from processing.aux import constellation_colors, constellation_map
+
 
 def plot_sv_observation_counts(vod_ts_svs, min_threshold=10, figsize=(10, 8), save_path=None):
     """
@@ -42,23 +44,8 @@ def plot_sv_observation_counts(vod_ts_svs, min_threshold=10, figsize=(10, 8), sa
     sv_data = sv_data[(sv_data['n'] >= 0) & (sv_data['n'] <= 200)]
     
     # Add constellation information based on first letter of SV
-    constellation_map = {
-        'G': 'GPS',
-        'R': 'GLONASS',
-        'E': 'Galileo',
-        'C': 'BeiDou',
-        'S': 'SBAS'
-    }
+
     sv_data['Constellation'] = sv_data['SV'].str[0].map(constellation_map)
-    
-    # Create color palette for constellations
-    constellation_colors = {
-        'GPS': '#1f77b4',  # blue
-        'GLONASS': '#ff7f0e',  # orange
-        'Galileo': '#2ca02c',  # green
-        'BeiDou': '#d62728',  # red
-        'SBAS': '#9467bd'  # purple
-    }
     
     # Main constellations to plot individually
     main_constellations = ['GPS', 'GLONASS', 'Galileo', 'BeiDou']
@@ -105,3 +92,4 @@ def plot_sv_observation_counts(vod_ts_svs, min_threshold=10, figsize=(10, 8), sa
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     else:
         plt.show()
+    return fig

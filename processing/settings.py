@@ -62,18 +62,11 @@ timeintervals_closed = 'left'
 # -----------------------------------
 # SETTINGS (user) – 03_calculate_vodmetrics_tempaggregation.py
 # -----------------------------------
-
 # general settings
 batch_run = False  # run all years in batch mode
 
-time_intervals = create_time_intervals('2024-04-03', '2024-04-04', 1)
-# time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
-# time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)  # standard
-
-single_file_interval = ('2024-04-03', '2024-04-04')  # optional, if not batch_run
-
-# set to True to iterate over parameters (angular_resolution, angular_cutoff, temporal_resolution)
-iterate_parameters = False  # not verified as of Nov 25
+iterate_parameters = False  # not verified as of Nov 25: # set to True to iterate over parameters (angular_resolution, angular_cutoff, temporal_resolution)
+make_ke = False  # whether to calculate ke
 
 # -----------------------------------
 # Flow settings
@@ -81,17 +74,27 @@ overwrite_vod_processing = False  # Overwrite existing VOD processing files – 
 overwrite_anomaly_processing = True  # overwrite existing anomaly processing files
 add_sbas_position_manually = True  # add SBAS position to VOD files
 
-# todo: settings on constellation
+# -----------------------------------
+# VOD settings - time intervals
+time_intervals = create_time_intervals('2024-04-03', '2024-04-04', 1)
+# time_intervals = create_time_intervals('2022-04-03', '2025-05-19', 2)
+# time_intervals = create_time_intervals('2024-04-01', '2024-10-31', 4)  # standard
 
+single_file_interval = ('2024-04-03', '2024-04-04')  # optional, if not batch_run
+# -----------------------------------
+# VOD settings - VOD calculation
 # parameters, L5 currently not really implemented, but should work when debugged
 bands = {'VOD1':['S1','S1X','S1C'], 'VOD2':['S2','S2X','S2C']} ## 'VOD3':['S3','S3X','S3C'], 'VOD4':['S4','S4X','S4C'], 'VOD5':['S5','S5X','S5C'],
             # 'VOD6':['S6','S6X','S6C'], 'VOD7':['S7','S7X','S7C'], 'VOD8':['S8','S8X','S8C'], 'VOD9':['S9','S9X','S9C'], 'VOD10':['S10','S10X','S10C']}
-visualization_timezone = "etc/GMT+6"
+
+# todo: settings on constellation
+
+# -----------------------------------
+# VOD settings - Anomaly calculation
 
 # for ke calculation:
 canopy_height = 20.0  # meters
 z0 = 1.0  # height of the ground receiver
-make_ke = False  # whether to calculate ke
 
 # for VOD calculation (must be lists)
 angular_resolution = 1  # degrees
@@ -103,10 +106,12 @@ agg_fun_satincell = "median"  # Konstantin's aggregation function for satellite 
 eval_num_obs_tps = True
 
 # -----------------------------------
+# Misc
+visualization_timezone = "etc/GMT+6"
+
+# -----------------------------------
 # quick plot of the results
 plot_results = True
-plotting_hemi = True
-plotting_hemi_var = "VOD1_mean"  # variable to plot in the hemisphere plot
 
 # ALWAYS CALC BOTH
 # anomaly_type = "phi_theta"  # or "phi_theta_sv" or "phi_theta"
@@ -226,8 +231,6 @@ SBAS_IDENT = {
         "PRN": "148",
     },
 }
-
-
 
 gnss_parameters_iteratable = {
     'angular_resolution': angular_resolution,  # must be a list

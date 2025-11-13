@@ -182,109 +182,508 @@ def calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_re
     return final
 
 
-def calculate_sv_specific_anomalies(vod_with_cells, band_ids, temporal_resolution, suffix="", **kwargs):
+def calc_anomaly_vh(vod, band_ids, suffix="",
+                    temporal_resolution=30, **kwargs):
     """
-    Calculate satellite vehicle specific VOD anomalies (Method 2: Konstantin's extension).
+    Vincent (global per-cell) anomaly calculation.
+
+    Compute one per-CellID mean over the full input span (no interval partition),
+    join it back to the raw rows, form anomalies as:
+        anomaly = VOD - VOD_mean_cell + global_offset
+    and aggregate to the requested temporal resolution.
 
     Parameters
     ----------
-    vod_with_cells : pandas.DataFrame
-        VOD data with cell IDs
-    band_ids : list
-        List of band identifiers to calculate anomalies for
-    temporal_resolution : int
-        Temporal resolution in minutes
+    vod : pandas.DataFrame
+        Must contain columns for each band in band_ids and 'CellID'.
+        Index must have level 'Epoch' (or an 'Epoch' column convertible to index).
+    band_ids : list[str]
+        Bands to process (e.g. ['VOD1','VOD2']).
+    suffix : str, default ""
+        Suffix added to anomaly columns (prepended with '_' if non-empty).
+    temporal_resolution : int | str, default 30
+        If int/float, interpreted as minutes (e.g. 30 -> '30min').
+        If str, passed directly to pd.Grouper(freq=...).
+    **kwargs :
+        Optional:
+          agg_fun_vodoffset : str, default 'median'
+              Offset operator re-added after removing per-cell means.
+          agg_fun_ts : str, default 'median'
+              Temporal aggregation operator for anomalies.
 
     Returns
     -------
     pandas.DataFrame
-        Time series of VOD anomalies calculated using the SV-specific method
+        Aggregated anomaly time series with columns: f"{band}_anom{_suffix}"
     """
-    agg_fun_ts = kwargs.get('agg_fun_ts', 'mean')  # aggregation function for time series
-    agg_fun_vodoffset = kwargs.get('agg_fun_vodoffset', 'mean')  # aggregation function for VOD offset
-    agg_fun_satincell = kwargs.get('agg_fun_satincell', 'mean')  # aggregation function for satellite in cell
-    eval_num_obs_tps = kwargs.get('eval_num_obs_tps', False)  # whether to evaluate number of observations per SV
-    
-    vod_ts_all = []
-    suffix = f"_{suffix}" if suffix else ""
-    
-    # get all satellite vehicles (SVs) from the index
-    svs = vod_with_cells.index.get_level_values('SV').unique()
-    
-    # Process each satellite vehicle separately
-    for sv in svs:
-        # Extract data for this SV only
-        vod_sv = vod_with_cells.xs(sv, level='SV')
-        
-        # todo: revisit this condition
-        # Skip if there's not enough data for this SV
-        # if len(vod_sv) < 100:
-        #     print(f"Skipping SV {sv} due to insufficient data.")
-        #     continue
-        
-        aggregation_dict_over_cells = {band: agg_fun_satincell for band in band_ids}
-        aggregation_dict_over_cells.update({'CellID': 'size'})  # get length of vector
-        
-        # Calculate average values per grid cell for this specific SV
-        vod_avg_sv = vod_sv.groupby(['CellID']).agg(aggregation_dict_over_cells)
-        # rename CELLid to n
-        vod_avg_sv = vod_avg_sv.rename(columns={'CellID': 'n'})
-        
-        # -----------------------------------
-        # EVALUATION OF MINIMUM NUMBER OF OBSERVATIONS IN PER CELL PER SATELLITE
-        # print(f"Total number of cells for SV {sv}: {vod_avg_sv['n'].nunique()}")
-        plot = False
-        if plot:
-            print(f"Total number of cells for SV {sv}: {vod_avg_sv['n'].nunique()}")
-            # plot the histogram of n
-            vod_avg_sv['n'].hist(bins=50, alpha=0.5, figsize=(6, 4))
-            from matplotlib import pyplot as plt
-            plt.xlabel('Number of Observations per Cell')
-            plt.ylabel('Frequency')
-            plt.title(f"Histogram of Observations per Cell for SV {sv}")
-            plt.show()
-        # -----------------------------------
-        
-        # Join the cell averages back to the original data
-        vod_anom_sv = vod_sv.join(vod_avg_sv, on='CellID', rsuffix='_mean')
+    if vod is None or len(vod) == 0:
+        return pd.DataFrame()
 
-        # Calculate anomalies for each band
-        for band in band_ids:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                offset = vod_anom_sv[f"{band}"].agg(agg_fun_vodoffset)  # median offset for the band
-                vod_anom_sv[f"{band}_anom"] = vod_anom_sv[band] - vod_anom_sv[f"{band}_mean"] + offset
-        
-        # Add SV as a column before appending
-        vod_anom_sv['SV'] = sv
-        vod_anom_sv = vod_anom_sv.reset_index()
-        vod_ts_all.append(vod_anom_sv)
-    
-    # Combine all SV results
-    if vod_ts_all:
-        vod_ts_svs = pd.concat(vod_ts_all).set_index(['Epoch', 'SV'])
-        
-        # Evaluate number of observations per SV if requested
-        if eval_num_obs_tps:
-            plot_sv_observation_counts(vod_ts_svs, min_threshold=10)
-            
-        # Temporal aggregation
-        vod_ts_2 = vod_ts_svs.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_fun_ts)
-        
-        # Add back the mean
-        for band in band_ids:
-            """
-            Remove adding mean VOD here, as it is not needed in the final output. See method 1
-            """
-            vod_ts_2[f"{band}_anom{suffix}"] = vod_ts_2[f"{band}_anom"]
-    else:
-        vod_ts_2 = pd.DataFrame()
-    
-    # only return _anom cols
-    return vod_ts_2[[f"{band}_anom{suffix}" for band in band_ids]]
+    # Resolve frequency (accept minutes int or pandas offset string)
+    def _to_freq(val):
+        if isinstance(val, (int, float)):
+            return f"{int(val)}min"
+        return val
+
+    agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
+    agg_fun_ts = kwargs.get("agg_fun_ts", "median")
+    freq = _to_freq(temporal_resolution)
+
+    # Normalize suffix formatting
+    _suffix = f"_{suffix}" if suffix else ""
+
+    # Ensure we have an Epoch index level
+    work = vod.copy()
+    if 'Epoch' not in work.index.names:
+        if 'Epoch' in work.columns:
+            work = work.set_index('Epoch', drop=True)
+        else:
+            raise ValueError("vod must have 'Epoch' as index level or column.")
+    if 'CellID' not in work.columns:
+        raise ValueError("vod must contain a 'CellID' column.")
+
+    # Sort by time for deterministic grouping
+    work = work.sort_index()
+
+    # Per-CellID means over full span
+    cell_means = (
+        work
+        .groupby('CellID')[band_ids]
+        .mean()
+        .add_suffix('_mean')
+    )
+
+    # Join back on CellID
+    work = work.join(cell_means, on='CellID')
+
+    # Global offsets per band (using chosen operator over entire dataset)
+    global_offsets = {
+        band: getattr(work[band], agg_fun_vodoffset)()
+        for band in band_ids
+        if band in work.columns
+    }
+
+    # Form anomalies per band
+    for band in band_ids:
+        mean_col = f"{band}_mean"
+        if band not in work.columns or mean_col not in work.columns:
+            continue
+        work[f"{band}_anom{_suffix}"] = work[band] - work[mean_col] + global_offsets[band]
+
+    # Temporal aggregation to requested resolution
+    anom_cols = [f"{band}_anom{_suffix}" for band in band_ids if f"{band}_anom{_suffix}" in work.columns]
+    if not anom_cols:
+        return pd.DataFrame()
+
+    ts = (
+        work[anom_cols]
+        .groupby(pd.Grouper(freq=freq, level='Epoch'))
+        .agg(agg_fun_ts)
+        .dropna(how='all')
+    )
+
+    return ts, cell_means
 
 
-def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resolution, con=None, biomass_bins=5, **kwargs):
+
+def calc_anomaly_ks(vod, band_ids, suffix="",
+                    temporal_resolution=30, **kwargs):
+    """
+    Konstantin (SV-specific per-cell) anomaly calculation — concise code, verbose annotations.
+
+    Concept (hybrid of AK & VH):
+      • Like VH: subtract a per-cell mean, but
+      • Do it per-SV: means are computed per (SV, CellID) across the full span (no interval partition as in AK).
+      • Add back a per-SV band offset to preserve level (median/mean per-SV).
+
+    Vectorized pipeline:
+      1) Normalize suffix + resolve frequency (int minutes or pandas offset).
+      2) Ensure ['Epoch','SV'] are index levels and 'CellID' exists.
+      3) Compute per-(SV,CellID) means for all bands in one grouped operation.
+      4) Join means back (broadcast per row).
+      5) Compute per-SV offsets per band (groupby('SV').transform(...)) and form anomalies:
+              anom = raw - mean_(SV,CellID) + offset_(SV)
+      6) Aggregate anomalies to the requested temporal resolution on 'Epoch'.
+
+    Parameters
+    ----------
+    vod : pandas.DataFrame
+        Must contain:
+          - index levels: 'Epoch' (datetime-like), 'SV' (e.g., G21, E05, ...)
+          - column: 'CellID'
+          - columns for each band in band_ids (e.g., 'VOD1','VOD2', ...)
+    band_ids : list[str]
+        Bands to process.
+    suffix : str, default ""
+        Optional suffix; if non-empty, leading underscore is added automatically.
+    temporal_resolution : int | str, default 30
+        - int/float -> treated as minutes, e.g. 30 -> '30min'
+        - str       -> passed to pd.Grouper(freq=...)
+    **kwargs :
+        Optional:
+          agg_fun_vodoffset : str, default 'median'
+              Operator for offset re-addition (per SV per band).
+          agg_fun_ts : str, default 'median'
+              Operator for time aggregation of anomalies.
+          agg_fun_satincell : str, default 'median'
+              Unused here (kept for signature symmetry).
+          eval_num_obs_tps : bool, default False
+              If True and show=True, plot observation counts per (SV,CellID).
+          show : bool, default False
+              If True, show optional evaluation plots.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Time-aggregated anomalies with columns: f"{band}_anom{suffix}"
+        Indexed by 'Epoch'.
+
+    Notes
+    -----
+    - No interval partitioning (AK does), this is a global (per-SV) per-cell mean removal.
+    - Fully vectorized; no per-SV loops, making it fast and concise.
+    """
+    if vod is None or len(vod) == 0:
+        return pd.DataFrame()
+
+    # ---- config / helpers ----------------------------------------------------
+    def _to_freq(val):
+        """Translate temporal_resolution to a pandas offset string."""
+        if isinstance(val, (int, float)):
+            return f"{int(val)}min"
+        return val
+
+    agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
+    agg_fun_ts = kwargs.get("agg_fun_ts", "median")
+    eval_num_obs_tps = kwargs.get("eval_num_obs_tps", False)
+    show = kwargs.get("show", False)
+    freq = _to_freq(temporal_resolution)
+    _suffix = f"_{suffix}" if suffix else ""
+
+    # ---- input validation / index normalization ------------------------------
+    work = vod.copy()
+    # Ensure 'Epoch' is an index level
+    if 'Epoch' not in work.index.names:
+        if 'Epoch' in work.columns:
+            work = work.set_index('Epoch', drop=True)
+        else:
+            raise ValueError("vod must have 'Epoch' as index level or column.")
+    # Ensure 'SV' is an index level
+    if 'SV' not in work.index.names:
+        if 'SV' in work.columns:
+            work = work.set_index('SV', append=True)
+        else:
+            raise ValueError("vod must contain 'SV' either as index level or column.")
+    # Ensure CellID exists
+    if 'CellID' not in work.columns:
+        raise ValueError("vod must contain a 'CellID' column.")
+
+    work = work.sort_index()  # deterministic grouping
+
+    # ---- 1) per-(SV, CellID) means ------------------------------------------
+    # Compute means for all bands at once; columns become e.g. 'VOD1_mean'
+    sv_cell_means = (
+        work.groupby(['SV', 'CellID'])[band_ids]
+            .mean()
+            .add_suffix('_mean')
+    )
+    # Join means back to each row using the two keys
+    work = work.join(sv_cell_means, on=['SV', 'CellID'])
+
+    # ---- 2) per-SV offsets and anomalies ------------------------------------
+    # Build anomalies for each band in a tight loop (vectorized operations).
+    anom_cols = []
+    for band in band_ids:
+        mean_col = f"{band}_mean"
+        if band not in work.columns or mean_col not in work.columns:
+            continue
+        # Per-SV offset: median/mean over raw values for that band and SV
+        # transform aligns offsets back to each row (same index shape)
+        offset_sv = work.groupby('SV')[band].transform(agg_fun_vodoffset)
+        anom_col = f"{band}_anom{_suffix}"
+        work[anom_col] = work[band] - work[mean_col] + offset_sv
+        anom_cols.append(anom_col)
+
+    if not anom_cols:
+        return pd.DataFrame()
+
+    # ---- (Optional) evaluate observations per (SV, CellID) -------------------
+    # Keep behavior from the previous implementation; gated by flags.
+    if eval_num_obs_tps and show:
+        try:
+            counts = work.groupby(['SV', 'CellID']).size().to_frame('n')
+            # Reuse the existing plotting helper
+            plot_sv_observation_counts(counts.reset_index(), min_threshold=10, figsize=(6, 4))
+        except Exception:
+            pass
+
+    # ---- 3) temporal aggregation on 'Epoch' ---------------------------------
+    ts = (
+        work[anom_cols]
+            .groupby(pd.Grouper(freq=freq, level='Epoch'))
+            .agg(agg_fun_ts)
+            .dropna(how='all')
+    )
+
+    return ts
+
+def calc_anomaly_ksak(vod, band_ids, timedelta: pd.Timedelta, suffix="",
+                      temporal_resolution=30, **kwargs):
+    """
+    Hybrid KS+AK anomaly calculation (interval hemi means + per-SV anomalies).
+
+    Idea:
+      1) Partition timeline into fixed-length intervals (timedelta).
+      2) For each interval & CellID compute hemi mean per band using ALL SV together
+         (no SV distinction for the interval mean) -> interval_cell_mean.
+      3) For each row (Epoch, SV, CellID) form anomaly:
+            anomaly = raw_band - interval_cell_mean + sv_band_offset
+         where sv_band_offset = per-SV statistic (median/mean) of raw band over full span.
+      4) Aggregate anomalies to requested temporal_resolution.
+
+    Differences:
+      - AK: interval mean per CellID (done) + global offset.
+      - KS: per-(SV,CellID) mean + per-SV offset.
+      - KS+AK hybrid: interval per-CellID mean (all SV pooled) + per-SV offset.
+
+    Parameters
+    ----------
+    vod : DataFrame
+        MultiIndex (Epoch[, SV]) or columns 'Epoch','SV'; must contain 'CellID' and band_ids.
+    band_ids : list[str]
+        Bands to process.
+    timedelta : pd.Timedelta
+        Interval block length (e.g. pd.Timedelta('7D')).
+    suffix : str, default ""
+        Optional suffix for anomaly columns (prepended with '_' if non-empty).
+    temporal_resolution : int | str, default 30
+        Minutes (int/float -> 'XXmin') or pandas offset string.
+    **kwargs :
+        agg_fun_vodoffset : str, default 'median'
+            Function name applied per SV for offset (e.g. 'median' or 'mean').
+        agg_fun_ts : str, default 'median'
+            Aggregation over time windows.
+        eval_num_obs_tps : bool, default False
+            If True and show=True plot observation counts (SV,CellID).
+        show : bool, default False
+            Show optional evaluation plot.
+
+    Returns
+    -------
+    (DataFrame, DataFrame)
+        (aggregated anomalies, interval CellID means)
+        Anomaly columns: f"{band}_anom{suffix}"
+
+    Notes
+    -----
+    - Interval means ignore SV to represent hemispheric cell state.
+    - Per-SV offset re-centers each satellite relative to its own long-term level.
+    - Fully vectorized (no explicit Python loops except band loop).
+    """
+    if vod is None or len(vod) == 0:
+        return pd.DataFrame(), pd.DataFrame()
+    if not isinstance(timedelta, pd.Timedelta):
+        raise TypeError("timedelta must be a pandas.Timedelta instance")
+
+    # ---- helpers / config ----
+    def _to_freq(val):
+        if isinstance(val, (int, float)):
+            return f"{int(val)}min"
+        return val
+    freq = _to_freq(temporal_resolution)
+    agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
+    agg_fun_ts = kwargs.get("agg_fun_ts", "median")
+    eval_num_obs_tps = kwargs.get("eval_num_obs_tps", False)
+    show = kwargs.get("show", False)
+    _suffix = f"_{suffix}" if suffix else ""
+
+    # ---- index normalization ----
+    work = vod.copy()
+    # Ensure Epoch index level
+    if 'Epoch' not in work.index.names:
+        if 'Epoch' in work.columns:
+            work = work.set_index('Epoch', drop=True)
+        else:
+            raise ValueError("vod must have 'Epoch' as index level or column.")
+    # Ensure SV index level
+    if 'SV' not in work.index.names:
+        if 'SV' in work.columns:
+            work = work.set_index('SV', append=True)
+        else:
+            raise ValueError("vod must contain 'SV' as index level or column.")
+    if 'CellID' not in work.columns:
+        raise ValueError("vod must contain 'CellID' column.")
+
+    work = work.sort_index()
+
+    # ---- derive interval_start per row (AK style) ----
+    epoch = work.index.get_level_values('Epoch')
+    first = epoch.min()
+    secs_from_first = (epoch - first).total_seconds()
+    interval_idx = (secs_from_first // timedelta.total_seconds()).astype(int)
+    work['interval_start'] = first + interval_idx * timedelta
+
+    # ---- compute interval hemi means (ALL SV pooled) ----
+    # Group only by interval_start + CellID, ignoring SV
+    interval_means = (
+        work
+        .groupby(['interval_start', 'CellID'])[band_ids]
+        .mean()
+        .add_suffix('_mean')
+    )
+
+    # Join back
+    work = work.join(interval_means, on=['interval_start', 'CellID'])
+
+    # ---- compute per-SV offsets (KS style) ----
+    # For each band do groupby('SV').transform(agg_fun_vodoffset)
+    offsets = {}
+    for band in band_ids:
+        if band not in work.columns:
+            continue
+        offsets[band] = work.groupby('SV')[band].transform(agg_fun_vodoffset)
+
+    # ---- form anomalies ----
+    anom_cols = []
+    for band in band_ids:
+        mean_col = f"{band}_mean"
+        if band not in work.columns or mean_col not in work.columns:
+            continue
+        anom_col = f"{band}_anom{_suffix}"
+        # raw - interval_cell_mean + per-SV offset
+        work[anom_col] = work[band] - work[mean_col] + offsets[band]
+        anom_cols.append(anom_col)
+
+    if not anom_cols:
+        return pd.DataFrame(), interval_means
+
+    # ---- optional evaluation ----
+    if eval_num_obs_tps and show:
+        try:
+            counts = work.groupby(['SV', 'CellID']).size().to_frame('n')
+            plot_sv_observation_counts(counts.reset_index(), min_threshold=10, figsize=(6, 4))
+        except Exception:
+            pass
+
+    # ---- temporal aggregation ----
+    ts = (
+        work[anom_cols]
+        .groupby(pd.Grouper(freq=freq, level='Epoch'))
+        .agg(agg_fun_ts)
+        .dropna(how='all')
+    )
+
+    return ts, interval_means
+
+def calc_anomaly_ak(vod, band_ids, timedelta: pd.Timedelta, suffix="",
+                    temporal_resolution="", **kwargs):
+    """
+    Interval-wise anomaly calculation (Alex concept).
+
+    For each fixed-length interval (size = `timedelta`):
+      1. Compute per-CellID mean VOD (vod_avg_interval).
+      2. Join those means onto the raw rows of that interval.
+      3. Form anomalies as (VOD - per-CellID interval mean + global offset).
+      4. Aggregate anomalies to `temporal_resolution`.
+
+    Parameters
+    ----------
+    vod : pandas.DataFrame
+        Must contain columns for each band in band_ids and 'CellID'; index must have level 'Epoch'.
+    band_ids : list[str]
+        Bands to process (e.g. ['VOD1','VOD2']).
+    timedelta : pd.Timedelta
+        Length of each interval block (e.g. pd.Timedelta('1D')).
+    suffix : str, default ""
+        Suffix added to anomaly columns (prepended with '_' if non-empty).
+    temporal_resolution : str, default "30min"
+        Pandas offset alias for temporal aggregation of anomalies.
+    **kwargs :
+        Optional:
+          agg_fun_vodoffset : str, default 'median'
+              Offset operator re-added after removing interval means.
+          agg_fun_ts : str, default 'median'
+              Temporal aggregation operator for anomalies.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Aggregated anomaly time series with columns: f"{band}_anom{_suffix}"
+    """
+    if vod.empty:
+        return pd.DataFrame()
+
+    # Validate timedelta
+    if not isinstance(timedelta, pd.Timedelta):
+        raise TypeError("timedelta must be a pandas.Timedelta instance")
+
+    agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
+    agg_fun_ts = kwargs.get("agg_fun_ts", "median")
+
+    # Normalize suffix formatting
+    _suffix = f"_{suffix}" if suffix else ""
+
+    # Keep working copy
+    work = vod.copy()
+
+    # Sort by time
+    work = work.sort_index()
+
+    # Derive interval start timestamps for each row, access multiindex level 'Epoch'
+    first = work.index.get_level_values('Epoch').min()
+    # Compute offset in whole timedelta units
+    delta_seconds = (work.index.get_level_values('Epoch') - first).total_seconds()
+    block_len = timedelta.total_seconds()
+    interval_indexer = (delta_seconds // block_len).astype(int)
+    work['interval_start'] = first + (interval_indexer * timedelta)
+
+    # Compute per-interval, per-CellID means
+    # Result index: (interval_start, CellID)
+    interval_means = (
+        work
+        .groupby(['interval_start', 'CellID'])[band_ids]
+        .mean()
+        .add_suffix('_mean')
+    )
+
+    # Join back on (interval_start, CellID)
+    work = work.join(interval_means, on=['interval_start', 'CellID'])
+
+    # Global offsets per band (using chosen operator over entire dataset)
+    global_offsets = {
+        band: getattr(work[band], agg_fun_vodoffset)()
+        for band in band_ids
+        if band in work.columns
+    }
+
+    # Form anomalies
+    for band in band_ids:
+        mean_col = f"{band}_mean"
+        if band not in work.columns or mean_col not in work.columns:
+            continue
+        # (raw - interval_cell_mean + global_offset)
+        work[f"{band}_anom{_suffix}"] = (
+            work[band] - work[mean_col] + global_offsets[band]
+        )
+
+    # Temporal aggregation to requested resolution
+    # Keep only anomaly columns
+    anom_cols = [f"{band}_anom{_suffix}" for band in band_ids if f"{band}_anom{_suffix}" in work.columns]
+    if not anom_cols:
+        return pd.DataFrame()
+
+    ts = (
+        work[anom_cols]
+        .groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch'))
+        .agg(agg_fun_ts)
+    )
+
+    # Drop empty rows
+    ts = ts.dropna(how='all')
+
+    return ts
+
+def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, con=None, biomass_bins=5, **kwargs):
     """
     Calculate VOD anomalies for cells grouped by biomass (VOD) bins and filtered by constellation.
     Bins go from low to high biomass
@@ -315,6 +714,7 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
     agg_fun_ts = kwargs.get('agg_fun_ts', 'mean')
     suffix = kwargs.get('suffix', '')
     plot_bins = kwargs.get('plot_bins', False)  # whether to plot the bin histograms for visualization
+    temporal_resolution = kwargs.get('temporal_resolution', 30)
     
     if suffix and not suffix.startswith('_'):
         suffix = f"_{suffix}"
@@ -445,5 +845,3 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, temporal_resoluti
                 plt.show()
 
     return combined_results
-
-

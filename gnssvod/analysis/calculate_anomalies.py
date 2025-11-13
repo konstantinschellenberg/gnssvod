@@ -2,15 +2,17 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 
-from analysis.calculate_anomaly_functions import calculate_biomass_binned_anomalies, calculate_extinction_coefficient, \
-    calculate_sv_specific_anomalies, \
+from analysis.calculate_anomaly_functions import calc_anomaly_ak, calc_anomaly_ksak, calc_anomaly_vh, \
+    calculate_biomass_binned_anomalies, \
+    calculate_extinction_coefficient, \
+    calc_anomaly_ks, \
     create_aggregation_dict, vod_fun
 from gnssvod import hemibuild
 from processing.export_vod_funs import plot_hemi
-from processing.settings import angular_cutoff, angular_resolution, plotting_hemi, plotting_hemi_var
+from processing.settings import canopy_height, z0
 
 
-def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
+def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     """
     Calculate VOD anomalies using both methods.
     
@@ -50,102 +52,77 @@ def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
         vod_avg : pandas.DataFrame
             Average VOD values per grid cell
     """
-    make_ke = kwargs.get('make_ke', False)  # whether to calculate extinction coefficient
-    agg_fun_ts = kwargs.get('agg_fun_ts', 'mean')  # aggregation function for time series
-    biomass_bins = kwargs.get('biomass_bins', 5)  # bins for biomass if needed
-    agg_fun_vodoffset = kwargs.get('agg_fun_vodoffset', 'mean')  # aggregation function for VOD offset
-    calculate_biomass_bins = kwargs.get('calculate_biomass_bins', True)
     
-    # print kwargs in a readable format
-    print("Calculating anomalies with the following parameters:")
-    for key, value in kwargs.items():
-        print(f"  {key}: {value}")
+    
     # -----------------------------------
-
-    if not isinstance(band_ids, list):
-        raise ValueError("band_ids must be a list of band identifiers.")
+    # Statistical metrics
     
+    sv_counts = vod.reset_index().groupby('Epoch')['SV'].nunique()
+
     # -----------------------------------
     # calculate extinction coefficient if requested
-    if make_ke:
+    if cfg.make_ke:
         vod, band_ids = calculate_extinction_coefficient(
             vod,
             band_ids,
-            canopy_height=kwargs.get('canopy_height', None),
-            z0=kwargs.get('z0', None)
+            canopy_height=canopy_height,
+            z0=z0
         )
     
     # -----------------------------------
-    # Get average value per grid cell
-    agg_dict = create_aggregation_dict(vod, band_ids)
-    
-    # Group by CellID and apply the specific aggregations
-    vod_avg = vod.groupby(['CellID']).agg(agg_dict)
-    
-    # Flatten the MultiIndex for Azimuth and Elevation (rename mean to '')
-    vod_avg.columns = ["_".join(x) for x in vod_avg.columns.to_flat_index()]
-    
-    # remove suffixes for Azimuth and Elevation
-    vod_avg = vod_avg.rename(columns={
-        'Azimuth_mean': 'Azimuth',
-        'Elevation_mean': 'Elevation'
-    })
-    # Count satellites per original epoch first
-    sv_counts = vod.reset_index().groupby('Epoch')['SV'].nunique()
+    # -----------------------------------
+    # Anomaly calculations
+    kwargs_anom = {
+        'temporal_resolution': cfg.temporal_resolution,
+        'agg_fun_vodoffset': cfg.agg_fun_vodoffset,
+        'agg_fun_satincell': cfg.agg_fun_satincell,
+        'eval_num_obs_tps': cfg.eval_num_obs_tps
+    }
     
     # -----------------------------------
     # Method 1: Vincent's method (phi_theta) - short tp
-    # Calculate anomaly
-    
-    band_ids_tp = ["VOD1"]
-    vod_drop = vod.drop(columns=['Azimuth', 'Elevation'], errors='ignore')
-    vod_anom = vod_drop.join(vod_avg, on='CellID')[band_ids_tp + [f"{band}_mean" for band in band_ids_tp]]
-    for band in band_ids:
-        if band == "VOD1":
-            offset = vod_anom[f"{band}"].agg(agg_fun_vodoffset)  # mean offset for VOD1
-            vod_anom[f"{band}_anom_tp"] = vod_anom[band] - vod_anom[f"{band}_mean"] + offset
-    vod_anom = vod_anom[[f"{band}_anom_tp" for band in band_ids_tp] + band_ids_tp]
-    
-    # Temporal aggregation
-    vod_ts_1 = vod_anom.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).agg(agg_fun_ts)
     # -----------------------------------
-    # Method 2: Konstantin's extension (phi_theta_sv) - short tps
-    vod_ts_2 = calculate_sv_specific_anomalies(vod, band_ids, temporal_resolution, **kwargs)
+    vod_ts_1, vod_avg = calc_anomaly_vh(vod, band_ids, suffix="vh", show=show, **kwargs_anom)
+
+    # -----------------------------------
+    # Method 2: Konstantin's extension >(phi_theta_sv) - short tps
+    # -----------------------------------
+    vod_ts_2 = calc_anomaly_ks(vod, band_ids, suffix="ks", show=show, **kwargs_anom)
+    
+    # -----------------------------------
+    # Method 3: Alex' approach
+    # -----------------------------------
+    vod_ts_3 = calc_anomaly_ak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ak", **kwargs_anom)
+    
+    # -----------------------------------
+    # Method 4: Konstantin and Alex combined approach
+    vod_ts_4 = calc_anomaly_ksak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ksak", **kwargs_anom)
+    
     
     # -----------------------------------
     # Calculate VOD anomalies for GPS and GALILEO separately
     
-    # filter where SV index starts with 'G' (GPS)
-    kwargs["eval_num_obs_tps"] = False  # do not evaluate number of observations per SV for this method
-    
-    # vod_con1 = vod[vod.index.get_level_values('SV').str.startswith('G')]
-    # vod_ts_con1 = calculate_sv_specific_anomalies(vod_con1, band_ids, temporal_resolution, suffix="gps", **kwargs)
-    
     vod_gps_gal = vod[vod.index.get_level_values('SV').str.startswith(('G', 'E'))]
-    if vod_gps_gal.empty:
-        pass
-    else:
-        vod_ts_con2 = calculate_sv_specific_anomalies(vod_gps_gal, band_ids, temporal_resolution, suffix="gps+gal",
-                                                      **kwargs)
-    # filter where SV index starts with 'E' (GALILEO)
+    if not vod_gps_gal.empty:
+        vod_ts_con2 = calc_anomaly_ks(vod_gps_gal, band_ids, suffix="gps+gal", **kwargs_anom)
   
+    # end anomaly calculations
+    # -----------------------------------
     # -----------------------------------
     # NEW FEATURES
     # Calculate Ns(t): Average number of satellites per resampled epoch
-    ns_t = sv_counts.groupby(pd.Grouper(freq=f"{temporal_resolution}min")).mean().rename('Ns_t')
+    ns_t = sv_counts.groupby(pd.Grouper(freq=f"{cfg.temporal_resolution}min")).mean().rename('Ns_t')
     
-    # ########
     # Calculate SD(Ns(t)): Standard deviation of the number of satellites per resampled epoch
-    sd_ns_t = sv_counts.groupby(pd.Grouper(freq=f"{temporal_resolution}min")).std().rename('SD_Ns_t')
+    sd_ns_t = sv_counts.groupby(pd.Grouper(freq=f"{cfg.temporal_resolution}min")).std().rename('SD_Ns_t')
     
-    # ########
     # Calculate C(t): Percentage of sky plots covered per time period
     # First, count total unique cells in the entire dataset
     total_possible_cells = vod['CellID'].nunique()
     
     # cutoff already applied to hemi grid - doesn't need to be filtere here again :)
     # For each time window, calculate the percentage of sky covered
-    cell_coverage = vod.groupby(pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch')).apply(
+    cell_coverage = vod.groupby(pd.Grouper(freq=f"{cfg.temporal_resolution}min", level='Epoch')).apply(
         lambda x: x['CellID'].nunique() / total_possible_cells * 100
     ).rename('C_t_perc')
     
@@ -177,7 +154,7 @@ def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
     # delete all col with all nans
     vod_sbas = vod_sbas.dropna(axis=1, how='all').drop(columns=['Azimuth', 'Elevation', 'CellID'], errors='ignore')
     vod_ts_sbas = vod_sbas.groupby(
-        [pd.Grouper(freq=f"{temporal_resolution}min", level='Epoch'), pd.Grouper(level='SV')]).agg(agg_fun_ts)
+        [pd.Grouper(freq=f"{cfg.temporal_resolution}min", level='Epoch'), pd.Grouper(level='SV')]).agg(cfg.agg_fun_ts)
     
     # widen the SV col, add SV as suffix to each col
     vod_ts_sbas = vod_ts_sbas.unstack(level='SV')
@@ -194,11 +171,10 @@ def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
             
     # -----------------------------------
     # Add biomass-binned anomalies if requested
-    if calculate_biomass_bins:
+    if cfg.calculate_biomass_bins:
         # GPS only
         vod_ts_anom_biomass_gps = calculate_biomass_binned_anomalies(
-            vod, vod_avg, band_ids, temporal_resolution,
-            con=['GPS', 'Galileo'], biomass_bins=biomass_bins, suffix='gps+gal', **kwargs
+            vod, vod_avg, band_ids, con=['GPS', 'Galileo'], biomass_bins=cfg.biomass_bins, suffix='gps+gal', **kwargs
         )
 
     # -----------------------------------
@@ -209,20 +185,26 @@ def _calculate_anomaly(vod, band_ids, temporal_resolution, **kwargs):
         'C_t_perc': cell_coverage
     })
     
-    vod_ds_combined = (vod_ts_1.join(vod_ts_2).
+    # -----------------------------------
+    # MERGE ALL TIME SERIES
+    vod_ds_combined = (vod_ts_1.join(vod_ts_2).join(vod_ts_4).
+                       join(vod_ts_3).
                        join(ds3).
                        join(vod_ts_sbas))
     
     if not vod_gps_gal.empty:
         vod_ds_combined = vod_ds_combined.join(vod_ts_con2)
     
-    if calculate_biomass_bins:
+    if cfg.calculate_biomass_bins:
         vod_ds_combined = vod_ds_combined.join(vod_ts_anom_biomass_gps)
-    
-    # -----------------------------------
-    if plotting_hemi:
-        hemi = hemibuild(angular_resolution, angular_cutoff)
-        plot_hemi(vod_avg, hemi.patches(), var=plotting_hemi_var, clim="auto", title=f"Skyplot {plotting_hemi_var}",
-                  angular_cutoff=angular_cutoff)
         
+    # -----------------------------------
+    # if param cols don't exist, make them here
+    # param_cols = ['angular_resolution', 'angular_cutoff', 'temporal_resolution']
+    #
+    # vod_ds_combined[param_cols] = pd.DataFrame(
+    #     [[cfg.angular_resolution, cfg.angular_cutoff, cfg.temporal_resolution]],
+    #     index=vod_ds_combined.index
+    # )
+    
     return (vod_ds_combined, vod_avg)

@@ -22,7 +22,7 @@ def process_single_interval(interval, iterate_params=False):
     processor.process_anomaly(**gnss_parameters_merged)
     
     if not iterate_params and plot_results:
-        processor.plot_results(
+        processor.plot_diel(
             gnssband="VOD1", algo="tps", save_dir=FIG, figsize=(7, 4),
             y_limits={'VOD1': (0., 0.7)}, time_zone=visualization_timezone
         )

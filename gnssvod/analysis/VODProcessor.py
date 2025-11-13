@@ -11,14 +11,21 @@ from dask.distributed import Client
 from tqdm import tqdm
 import os
 import xarray as xr
+from dataclasses import asdict, fields, MISSING
+from matplotlib.colors import ListedColormap
+import matplotlib as mpl
+import matplotlib.dates as mdates  # NEW
 
-from definitions import DATA
+from definitions import DATA, FIG
 import gnssvod as gv
 from gnssvod.io.preprocess import get_filelist
 from processing.filepattern_finder import create_time_filter_patterns, filter_files_by_date
-from processing.helper import print_color
+from processing.helper import print_color, check_instance
 from processing.settings import bands, SBAS_IDENT, station, moflux_coordinates, add_sbas_position_manually
+from processing.export_vod_funs import plot_hemi
+from processing.aux import constellation_map, constellation_colors
 from analysis.calculate_anomalies import _calculate_anomaly
+from analysis.config import AnomalyConfig, VodConfig
 
 
 # Process files individually and concatenate the DataFrames
@@ -39,7 +46,7 @@ def process_file(file_path):
         return pd.DataFrame()
 
 
-def _replace_sbas_coordinates(vod, sbas_ident):
+def _replace_sbas_coordinates(vod, sbas_ident, debug=False):
     """
     Replace Azimuth and Elevation values for SBAS satellites with fixed values.
 
@@ -74,7 +81,7 @@ def _replace_sbas_coordinates(vod, sbas_ident):
     """
     # List of SBAS satellites to process
     sbas_list = ['S31', 'S33', 'S35', 'S48']
-    print(f"Replacing Azimuth and Elevation for SBAS satellites: {sbas_list}")
+    print(f"Replacing Azimuth and Elevation for SBAS satellites: {sbas_list}") if debug else None
     
     # Create a copy to avoid warnings
     vod_updated = vod.copy()
@@ -96,7 +103,7 @@ def _replace_sbas_coordinates(vod, sbas_ident):
                 # Replace values
                 vod_reset.loc[mask, 'Azimuth'] = fixed_azi
                 vod_reset.loc[mask, 'Elevation'] = fixed_ele
-                print(f"  Updated {mask.sum()} rows for {sv}: Azimuth={fixed_azi}, Elevation={fixed_ele}")
+                print(f"  Updated {mask.sum()} rows for {sv}: Azimuth={fixed_azi}, Elevation={fixed_ele}") if debug else None
     
     # Set index back to original structure
     vod_updated = vod_reset.set_index(['Epoch', 'SV'])
@@ -105,7 +112,7 @@ def _replace_sbas_coordinates(vod, sbas_ident):
 
 class VODProcessor:
     def __init__(self, station=station, bands=bands, time_interval=None,
-                 pairings=None, recover_snr=True, plot=False, overwrite=False):
+                 pairings=None, recover_snr=True, plot=False, overwrite=False, debug=False):
         """
         Initialize the VOD processor.
 
@@ -134,9 +141,9 @@ class VODProcessor:
         self.bands = bands
         self.band_ids = list(bands.keys())
         self.time_interval = time_interval
-        self.plot = plot
         self.overwrite = overwrite
         self.recover_snr = recover_snr
+        self.debug = debug
         
         self._init_interval()
 
@@ -227,69 +234,48 @@ class VODProcessor:
         return data
 
 
-    def process_vod(self, local_file=False, overwrite=False, **kwargs):
+    def process_vod(self, cfg: VodConfig):
         """
-        Process VOD data and save to disk in temp folder to avoid memory overflow.
+        Process VOD data and save to temp parquet (memory friendly).
 
         Parameters
         ----------
-        local_file : bool, default=False
-            Whether to return the processed VOD data
-        overwrite : bool, default=False
-            Whether to overwrite existing files
-        **kwargs : dict
-            Additional keyword arguments, such as start_date and end_date
-
-        Returns
-        -------
-        pandas.DataFrame or None
-            VOD data if local_file=True, otherwise None
+        cfg : VodConfig
+            Explicit processing configuration.
         """
+        if not isinstance(cfg, VodConfig):
+            raise TypeError("cfg must be a VodConfig instance")
+
         # Store processing parameters for metadata
-        self.vod_processing_params = {
-            "local_file": local_file,
-            "overwrite": overwrite
-        }
-        self.vod_processing_params.update(kwargs)
-        
+        self.vod_processing_params = asdict(cfg)
+
         print_color(f"(1/2) Processing VOD data for {self.station}", "magenta")
-        
-        # Create a unique filename based on parameters
+
+        # Unique filename based on parameters and interval
         start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
         end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
-        # Create abbreviations for parameters
-        band_abbr = f"bd{len(self.bands)}"  # Number of bands
-        snr_abbr = f"rs{int(self.recover_snr)}"  # SNR recovery (1=True, 0=False)
-        # Create filename with parameter abbreviations
+        band_abbr = f"bd{len(self.bands)}"
+        snr_abbr = f"rs{int(self.recover_snr)}"
         self.vod_filename = f"vod_{self.station}_{start_date}_{end_date}_{band_abbr}_{snr_abbr}"
-        
-        # Create temp directory if it doesn't exist
+
+        # Prepare output path
         self.vod_file_temp = self.temp_dir / (self.vod_filename + ".parquet")
         self.vod_file_temp.parent.mkdir(exist_ok=True, parents=True)
-        
-        # Check if file already exists and overwrite flag
-        if self.vod_file_temp.exists() and not overwrite:
-            print(f"VOD data file already exists at {self.vod_file_temp}. Loading from disk.")
-            return None
-        
-        # -----------------------------------
-        # concat all files
-        """
-        Can't debug after this point because of dask client initialization
-        –> Consider commenting it out in self._concat_nc_files
-        """
 
+        # Reuse if present
+        if self.vod_file_temp.exists() and not cfg.overwrite:
+            print(f"    VOD data file already exists at {self.vod_file_temp}. Loading from disk.")
+            return None
+
+        # Concatenate input files
         print_color(f"Concatenating NC files matching pattern: {self.pattern}", "yellow")
-        # This will return a Dask DataFrame
         df_combind_ncs = self._concat_nc_files(
             filepattern=self.pattern,
             interval=self.time_interval,
-            n_workers=15,  # Adjust as needed
+            n_workers=cfg.n_workers,
         )
-        
-        # -----------------------------------
+
         # Calculate VOD
-        
         print_color(f"Calculating VOD, pairing:{self.pairings}, bands:{self.bands}", "yellow")
         vod = gv.calc_vod(
             df_combind_ncs,
@@ -297,10 +283,9 @@ class VODProcessor:
             self.bands,
             recover_snr=self.recover_snr
         )
-        
-        # Save to disk
+
+        # Save to parquet
         try:
-            # compute vod while saving as parquet
             vod.compute(optimize_graph=True).to_parquet(self.vod_file_temp, engine='pyarrow')
         except Exception as e:
             print(f"Error saving VOD data to {self.vod_file_temp}: {e}")
@@ -308,132 +293,141 @@ class VODProcessor:
         return None
     
     
-    def process_anomaly(self, angular_resolution, angular_cutoff, temporal_resolution, overwrite=False, **kwargs):
+    def process_anomaly(self, cfg: AnomalyConfig):
         """
-        Calculate VOD anomalies with multiple parameter combinations in parallel.
-        Uses saved files if they exist and overwrite=False.
+        Calculate VOD anomalies for a single, explicit configuration.
 
         Parameters
         ----------
-        angular_resolution : list or float
-            Angular resolution values to test
-        angular_cutoff : list or float
-            Angular cutoff values to test
-        temporal_resolution : list or int
-            Temporal resolution values to test
-        max_workers : int, optional
-            Maximum number of parallel workers
-        overwrite : bool, default=False
-            Whether to overwrite existing results files
-        **kwargs : dict
-            Additional keyword arguments
+        cfg : AnomalyConfig
 
         Returns
         -------
         xarray.Dataset
-            Combined results from all parameter combinations
+            Combined results loaded from the saved output.
         """
-        
-        ar = angular_resolution
-        ac = angular_cutoff
-        tr = temporal_resolution
-        
-        # Transform all parameters to lists if they are not already
-        if not isinstance(ar, int):
-            raise ValueError("angular_resolution must be int")
-        if not isinstance(ac, int):
-            raise ValueError("angular_cutoff must be int")
-        if not isinstance(tr, int):
-            raise ValueError("temporal_resolution must be int")
-            
-        # Store anomaly parameters for metadata
-        self.anomaly_params = kwargs.copy()
-        self.anomaly_params.update({"band_ids": self.band_ids})
+        if not isinstance(cfg, AnomalyConfig):
+            raise TypeError("cfg must be an AnomalyConfig instance")
 
-        # if not len(angular_resolution) * len(angular_cutoff) * len(temporal_resolution) == 1 –> raise
-        if ar*ac*tr == 0:
-            raise ValueError("At least one parameter must be provided for angular_resolution, ")
-        
-        self.anomaly_params.update({"angular_resolution": ar,
-                                    "angular_cutoff": ac,
-                                    "temporal_resolution": tr})
-        # Check for existing results files and load them if available
-        result_paths = []
-        
-        # Create a unique filename based on parameters
+        print_color(f"(2/2) Processing VOD anomalies for {self.station}", "magenta")
+
+        # Persist config for metadata (and attach band_ids for traceability)
+        params = asdict(cfg)
+        params.update({"band_ids": self.band_ids})
+
+        # Canonical file naming (kept as before)
         start_date = pd.to_datetime(self.time_interval[0]).strftime('%Y%m%d')
         end_date = pd.to_datetime(self.time_interval[1]).strftime('%Y%m%d')
         time_abbr = start_date if start_date == end_date else f"{start_date}_{end_date}"
         
-        # Extract year and month from time interval for compact representation
-        filename = f"vod_anomaly_{self.station}_{time_abbr}_ar{ar}_ac{ac}_tr{tr}.pkl"
+        # File paths
+        filename = (
+            f"vod_anomaly_{self.station}_{time_abbr}"
+            f"_ar{cfg.angular_resolution}_ac{cfg.angular_cutoff}_tr{cfg.temporal_resolution}.pkl"
+        )
+        temp_dir = DATA / 'temp'
         file_path = self.temp_dir / filename
+        anomaly_file_path = self.temp_dir / filename
+        hemispheric_file_path = anomaly_file_path.parent / filename.replace("vod_anomaly", "vod_hemisphere")
         
-        # Check if file exists and overwrite flag
-        if not file_path.exists() and overwrite:
-            """Process VOD anew"""
-            print(f"Processing combination: AR={ar}, AC={ac}, TR={tr}")
-            params = self.anomaly_params.copy()
-            currrent_updates = {
-                'angular_resolution': ar,
-                'angular_cutoff': ac,
-                'temporal_resolution': tr,
-                'vod_anomaly_filename': filename,
-            }
-            # Update with kwargs
-            params.update(currrent_updates)
+        # Save the exact config in the processor for metadata
+        self.anomaly_params = {**params, "vod_anomaly_filename": filename}
+
+        # -----------------------------------
+        # PROCESSING
+        # -----------------------------------
+        if file_path.exists() and not cfg.overwrite:
+            print(f"    Found existing results for AR={cfg.angular_resolution}, AC={cfg.angular_cutoff}, TR={cfg.temporal_resolution}, Interval={self.time_interval}, loading from disk.")
+            result_paths = [str(file_path)]
+        else:
+            # Load VOD parquet produced earlier
             
-            print(f"Processing parameter combination: {params}")
-            # Load VOD data from disk for this process
-            temp_dir = DATA / 'temp'
-            anomaly_file_path = temp_dir / params['vod_anomaly_filename']
-            vod_file_path = temp_dir / (self.vod_filename + ".parquet")
-            
-            # read parquet as pandas DataFrame
-            vod = pd.read_parquet(vod_file_path)
-            vod.set_index('SV', inplace=True, append=True)  # Ensure 'Epoch' is the index
-            
-            # add position of sbas satellites (why did they got lost?)
+            if not self.vod_file_temp.exists():
+                raise FileNotFoundError(
+                    f"Expected VOD parquet not found: {self.vod_file_temp}\n"
+                    f"Run process_vod() first for the same interval and station."
+                )
+            vod = pd.read_parquet(self.vod_file_temp)
+            vod.set_index('SV', inplace=True, append=True)
+
+            # -----------------------------------
+            # Add SBAS fixed coordinates if requested globally
             if add_sbas_position_manually:
-                print("Replacing SBAS coordinates with fixed values...")
-                vod = _replace_sbas_coordinates(vod, SBAS_IDENT)
+                if self.debug:
+                    print("Replacing SBAS coordinates with fixed values...")
+                vod = _replace_sbas_coordinates(vod, SBAS_IDENT, debug=self.debug)
             
-            # Build hemispheric grid
-            hemi = gv.hemibuild(params['angular_resolution'], params['angular_cutoff'])
+            # -----------------------------------
+            # Build hemispheric grid and add CellID
+            hemi = gv.hemibuild(cfg.angular_resolution, cfg.angular_cutoff)
+            if self.debug:
+                print(f"Built hemisphere grid: AR={cfg.angular_resolution}, AC={cfg.angular_cutoff}")
+            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)
             
-            # Classify VOD into grid cells
-            print("Adding CellID to VOD data...")
-            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)  # Drop position without data
+            # -----------------------------------
+            # Filter SV from cfg.constellations if specified
             
-            # Calculate anomalies (now accepts pandas DataFrame directly)
-            print("Calculating anomalies...")
-            vod_ts_combined, vod_avg = _calculate_anomaly(vod=vod_with_cells, **params)
-            
-            # Add parameter columns
-            vod_ts_combined['angular_resolution'] = params['angular_resolution']
-            vod_ts_combined['angular_cutoff'] = params['angular_cutoff']
-            vod_ts_combined['temporal_resolution'] = params['temporal_resolution']
-            
+            if cfg.constellations is not None and len(cfg.constellations) > 0:
+                letters_requested = {str(c).lower() for c in cfg.constellations}
+                # constellation_map: letter -> full name
+                letters = {
+                    k for k, v in constellation_map.items()
+                    if k.lower() in letters_requested or (isinstance(v, str) and v.lower() in letters_requested)
+                }
+                sv_level = vod_with_cells.index.get_level_values('SV').astype(str)
+                initial_count = sv_level.nunique()
+                mask = sv_level.str[0].isin(letters)
+                vod_with_cells = vod_with_cells[mask]
+                final_count = vod_with_cells.index.get_level_values('SV').astype(str).nunique()
+                
+            # -----------------------------------
+            # -----------------------------------
+            # Calculate anomalies
+            vod_ts_combined, vod_avg = _calculate_anomaly(
+                vod=vod_with_cells,
+                band_ids=self.band_ids,
+                cfg=cfg
+            )
+            # -----------------------------------
+            # -----------------------------------
+            # Attach configuration columns to the output for traceability
+            for k, v in params.items():
+                try:
+                    vod_ts_combined[k] = v
+                except Exception:
+                    pass  # robust to index alignment variations
+
             # Save to disk
             vod_ts_combined.to_pickle(anomaly_file_path)
-            print(f"Saved anomaly results to {anomaly_file_path}")
-            result_paths.append(anomaly_file_path)
-        else:
-            """Loading existing results"""
-            print(f"Found existing results for AR={ar}, AC={ac}, TR={tr}, Interval={self.time_interval}, loading from disk.")
-            result_paths.append(str(file_path))
-            
-        # Combine results into a single xarray dataset
+            vod_avg.to_pickle(hemispheric_file_path)
+            result_paths = [str(anomaly_file_path)]
+
+        # -----------------------------------
+        # SAVE (This might be a horrible way to do it. I should just load them into memory directly?)
+        # -----------------------------------
+        # Save as VOD timeseries (NetCDF + metadata)
+        # Combine and keep as xarray
         self.results = self._combine_results(result_paths)
-        
-        # Save as VOD timeseries
+
         if self.results is not None:
-            self._save_vod_timeseries(
+            outfile_timeseries = self._save_vod_timeseries(
                 filename=f"vod_timeseries_{self.station}",
                 overwrite=self.overwrite,
             )
+        print(f"    2) Saved VOD time series to {outfile_timeseries}")
+        # -----------------------------------
+        # Save hemispheric data as well (vod_avg, as nc)
+        # read in pickle
         
-        return self.results
+        self.hemi = pd.read_pickle(hemispheric_file_path)
+        hemispheric_file_path_final = outfile_timeseries.parent / filename.replace("vod_anomaly", "vod_hemisphere")
+        # replace .pkl to .nc
+        hemispheric_file_path_final = hemispheric_file_path_final.with_suffix('.nc')
+        self.hemi.to_xarray().to_netcdf(hemispheric_file_path_final)
+        print(f"    3) Saved hemisphere data to {hemispheric_file_path_final}")
+        
+        # BUT registered results as timeseries and hemi as hemispheric mean vod
+        return None
     
     def _save_vod_timeseries(self, filename, overwrite=False):
         """
@@ -473,7 +467,7 @@ class VODProcessor:
             df = df.set_index('datetime')
             metadata = self._create_metadata()
             start, end = pd.to_datetime(self.time_interval[0]), pd.to_datetime(self.time_interval[1])
-            outname = f"{filename}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_{metadata["metadata_id"]}"
+            outname = f"{filename}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_{metadata['metadata_id']}"
             
             # Add .nc extension if not already present
             if not outname.endswith('.nc'):
@@ -496,7 +490,6 @@ class VODProcessor:
             # Save metadata
             self._save_metadata(metadata, file_path)
             
-            print(f"Saved VOD time series to {file_path}")
             return file_path
         
         except Exception as e:
@@ -530,7 +523,7 @@ class VODProcessor:
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=4, default=str)
             
-            print(f"Saved metadata to {metadata_path}")
+            print(f"    1) Saved metadata to {metadata_path}")
             return metadata_path
         
         except Exception as e:
@@ -546,6 +539,24 @@ class VODProcessor:
         dict
             Dictionary containing metadata about the VOD processing
         """
+        # Helper to build a minimal schema from a dataclass
+        def _schema_from_dataclass(dc):
+            try:
+                flds = fields(dc)
+            except Exception:
+                return {}
+            schema = {}
+            for f in flds:
+                # best-effort type name
+                tname = getattr(f.type, "__name__", str(f.type))
+                if f.default is not MISSING:
+                    default = f.default
+                else:
+                    # default_factory may also be present
+                    default = "<required>" if getattr(f, "default_factory", MISSING) is MISSING else "<factory>"
+                schema[f.name] = {"type": tname, "default": default}
+            return schema
+
         # Create basic metadata dictionary
         metadata = {
             "processing_timestamp": pd.Timestamp.now().isoformat(),
@@ -559,50 +570,78 @@ class VODProcessor:
                 "pattern": self.pattern,
             },
             "initialization": {
-                "bands": {k: v for k, v in self.bands.items()},  # Convert to dict if needed
+                "bands": {k: v for k, v in self.bands.items()},
                 "band_ids": self.band_ids,
                 "pairings": self.pairings,
                 "recover_snr": self.recover_snr,
                 "overwrite": self.overwrite,
-                "plot": self.plot,
             }
         }
-        
-        # Add processing parameters if they exist
+
+        # Add processing parameters if they exist (kept for backward compatibility)
         if hasattr(self, 'vod_processing_params'):
             metadata["vod_processing"] = self.vod_processing_params
-        
-        # Add anomaly parameters if they exist
+
+        # Add anomaly parameters if they exist (kept for backward compatibility)
         if hasattr(self, 'anomaly_params'):
             metadata["anomaly_processing"] = self.anomaly_params
-            # add a key "multi_parameter" to indicate that multiple parameter combinations were processed
-            # check if any of the parameters are lists of len > 1
             multi_parameter = any(isinstance(v, list) and len(v) > 1 for v in self.anomaly_params.values())
             metadata["anomaly_processing"]["multi_parameter"] = multi_parameter
         else:
-            # If processing hasn't run, but we have the parameters as attributes
             anomaly_params = {}
             for param in ['angular_resolution', 'angular_cutoff', 'temporal_resolution']:
                 if hasattr(self, param):
                     anomaly_params[param] = getattr(self, param)
-            
             if anomaly_params:
                 metadata["anomaly_processing"] = anomaly_params
-        
-        # Add results information if available
+
+        # Results summary (unchanged)
         if hasattr(self, 'results') and self.results is not None:
-            # Just add info about the results, not the full data
             metadata["results"] = {
                 "variables": list(self.results.variables),
                 "dimensions": {dim: len(self.results[dim]) for dim in self.results.dims},
                 "coordinates": {coord: list(self.results[coord].values)
                                 for coord in self.results.coords
-                                if len(self.results[coord].values) < 100}  # Only include small coordinate lists
+                                if len(self.results[coord].values) < 100}
             }
-            
-        # make a hash for the metadata
+
+        # NEW: attach config schemas and values (automatically from the dataclasses)
+        try:
+            vod_schema = _schema_from_dataclass(VodConfig)
+        except Exception:
+            vod_schema = {}
+        try:
+            anom_schema = _schema_from_dataclass(AnomalyConfig)
+        except Exception:
+            anom_schema = {}
+
+        config_section = {
+            "schema": {
+                "VodConfig": vod_schema,
+                "AnomalyConfig": anom_schema,
+            },
+            "values": {}
+        }
+
+        # Populate used values, filtered to each config's declared fields
+        if hasattr(self, 'vod_processing_params') and isinstance(vod_schema, dict) and vod_schema:
+            config_section["values"]["VodConfig"] = {
+                k: self.vod_processing_params.get(k, None) for k in vod_schema.keys()
+            }
+
+        if hasattr(self, 'anomaly_params') and isinstance(anom_schema, dict) and anom_schema:
+            # Only keep true AnomalyConfig fields; extras (e.g., band_ids, filenames) go to "extras"
+            anom_vals = {k: self.anomaly_params.get(k, None) for k in anom_schema.keys()}
+            extras = {k: v for k, v in self.anomaly_params.items() if k not in anom_schema}
+            config_section["values"]["AnomalyConfig"] = anom_vals
+            if extras:
+                config_section["values"]["AnomalyConfig_extras"] = extras
+
+        metadata["config"] = config_section
+
+        # Stable metadata id
         metadata["metadata_id"] = f"{hash(frozenset(str(metadata.items()))):x}"
-        
+
         return metadata
     
     def _combine_results(self, result_paths):
@@ -649,144 +688,374 @@ class VODProcessor:
         
         return ds
     
-    def plot_results(self, gnssband="VOD1para", algo="tps", figsize=(12, 10), save_dir=None, show=True,
-                     time_zone='etc/GMT+6', y_limits=None):
+    def plot_hemispheric(self, var, angle_res: float = 1.0,
+                         angle_cutoff: float = 30.0, make=True, **kwargs):
+        if not make:
+            return None
+        hemi = gv.hemibuild(angle_res, angle_cutoff)
+        plot_hemi(self.hemi, hemi.patches(), var=var, angular_cutoff=angle_cutoff, show_sbas=False, **kwargs)
+    
+    def plot_hist(self, vars, bins=50, sharex=True, figsize=None, cmap='viridis',
+                  density=False, combine=False, save_path=None, show=True, make=True):
         """
-        Plot results for all parameter combinations, showing time series and diurnal cycles.
+        Plot histograms of one or multiple variables.
 
         Parameters
         ----------
-        figsize : tuple, default=(12, 10)
-            Figure size in inches
-        save_dir : str or Path, optional
-            Directory to save plots. If None, plots won't be saved
-        show : bool, default=True
-            Whether to display plots
-        time_zone : str, default='etc/GMT+6'
-            Time zone for diurnal cycle calculation
-        y_limits : dict, optional
-            Dictionary mapping variable names to (min, max) tuples for y-axis limits
+        vars : str | list[str]
+            Variable name(s) in results. If 'X' not found, tries 'X_anom'.
+        bins : int | sequence
+            Number of bins or bin edges (used in non-combined mode).
+        sharex : bool
+            If True, share x-axis limits across subplots (or apply common limits in combined mode).
+        figsize : tuple | None
+            Size of a single subplot (width, height) in inches. The total figure size
+            is computed as (figsize[0] * ncols, figsize[1] * nrows). In combined mode,
+            figsize applies to the single axis directly.
+        cmap : str | Colormap
+            Matplotlib colormap name or Colormap instance to color panels/lines distinctly.
+        density : bool
+            If True, normalize hist to show probability density (non-combined mode only).
+        combine : bool
+            If True, plot all variables in a single axis as KDE density curves with low-alpha fill.
+        save_path : str | Path | None
+            If provided, save the figure to this path.
+        show : bool
+            Whether to display the figure.
         """
+        if not make:
+            return None
+        
         if self.results is None:
-            print("No results available. Run process_vod first.")
-            return
-        
-        # Convert xarray dataset to dataframe for easier manipulation
-        df = self.results.to_dataframe().reset_index()
-        
-        # Filter columns that contain the algo value in their name
-        algo_cols = [col for col in df.columns if algo in col]
-        df_tps = df[algo_cols]
-        # strip suffix from column names
-        df_tps.columns = [col.replace(f"_{algo}", "") for col in df_tps.columns]
-        # merge back to df
-        df_tps = df.merge(df_tps, left_index=True, right_index=True)
-        
-        if df_tps.empty:
-            print(f"No results with algo='{algo} found.")
-            return
-        
-        # Get unique parameter combinations
-        param_cols = ['angular_resolution', 'angular_cutoff', 'temporal_resolution']
-        param_combinations = df_tps[param_cols].drop_duplicates()
-        
-        # Create save directory if needed
-        if save_dir is not None:
-            save_dir = Path(save_dir)
-            save_dir.mkdir(exist_ok=True, parents=True)
-        
-        # Get the bands to plot (those ending with '_anom')
-        band_cols = [col for col in df_tps.columns if col.endswith('_anom')]
-        
-        # Convert datetime to timezone-aware for diurnal cycle
-        df_tps = df_tps.copy()  # Create an explicit copy to avoid SettingWithCopyWarning
-        df_tps['datetime'] = pd.to_datetime(df_tps['Epoch'])
-        df_tps['datetime_tz'] = df_tps['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
-        df_tps['hod'] = df_tps['datetime_tz'].dt.hour + df_tps['datetime_tz'].dt.minute / 60
-        
-        # Plot each parameter combination
-        for _, params in param_combinations.iterrows():
-            ar = params['angular_resolution']
-            ac = params['angular_cutoff']
-            tr = params['temporal_resolution']
-            
-            # Filter data for this parameter combination
-            param_data = df_tps[
-                (df_tps['angular_resolution'] == ar) &
-                (df_tps['angular_cutoff'] == ac) &
-                (df_tps['temporal_resolution'] == tr)
-                ]
-            
-            # Create figure with subplots
-            fig, axes = plt.subplots(1, 2, figsize=figsize,
-                                     gridspec_kw={'width_ratios': [2, 1]})
-            
-            # Set the title with parameter information
-            fig.suptitle(f"VOD Analysis - {self.station}\n"
-                         f"AR: {ar}°, AC: {ac}°, TR: {tr}min, Algorithm: tps",
-                         fontsize=14, y=0.98)
-            
-            # 1. Time series plot (2/3 of figure height)
+            print("No results available.")
+            return None
 
-            
-            # select bands based on the provided band (list provided in settings)
-            if isinstance(gnssband, str):
-                band_cols = [f"{gnssband}_anom"]
-            elif isinstance(gnssband, list):
-                band_cols = [f"{b}_anom" for b in gnssband]
-            
-            for band in band_cols:
-                param_data.plot(x='datetime', y=band, ax=axes[0], label=band)
-            
-            axes[0].set_xlabel('Date')
-            axes[0].set_ylabel('VOD Anomaly')
-            axes[0].set_title('Time Series')
-            axes[0].grid(True, linestyle='--', alpha=0.7)
-            axes[0].legend()
-            
-            # Apply y-limits if provided
-            if y_limits is not None:
-                for band in band_cols:
-                    band_name = band.split('_')[0]
-                    if band_name in y_limits:
-                        axes[0].set_ylim(y_limits[band_name])
-            
-            # 2. Diurnal cycle plot (1/3 of figure height)
-            # Group by hour of day and calculate mean
-            diurnal_data = param_data.groupby('hod')[band_cols].mean()
-            
-            # Plot diurnal cycle
-            for band in band_cols:
-                axes[1].plot(diurnal_data.index, diurnal_data[band], label=band)
-            
-            axes[1].set_xlabel('Hour of Day (Local Time)')
-            axes[1].set_ylabel('VOD Anomaly')
-            axes[1].set_title('Diurnal Cycle')
-            axes[1].set_xlim(0, 24)
-            axes[1].grid(True, linestyle='--', alpha=0.7)
-            
-            # Apply y-limits if provided
-            if y_limits is not None:
-                for band in band_cols:
-                    band_name = band.split('_')[0]
-                    if band_name in y_limits:
-                        axes[1].set_ylim(y_limits[band_name])
-            
-            # Adjust layout
-            plt.tight_layout()
-            
-            # Save figure if requested
-            if save_dir is not None:
-                filename = f"vod_{self.station}_ar{ar}_ac{ac}_tr{tr}.png"
-                plt.savefig(save_dir / filename, dpi=300, bbox_inches='tight')
-            
-            # Show or close figure
+        # Normalize vars input
+        if isinstance(vars, str):
+            vars = [vars]
+
+        # Flatten results to DataFrame
+        df = self.results.to_dataframe().reset_index()
+
+        # Resolve columns (support _anom fallback)
+        resolved = []
+        for v in vars:
+            if v in df.columns:
+                resolved.append(v)
+            elif f"{v}_anom" in df.columns:
+                resolved.append(f"{v}_anom")
+            else:
+                print(f"Variable {v} (or {v}_anom) not found, skipping.")
+        if not resolved:
+            print("No valid variables to plot.")
+            return None
+
+        n = len(resolved)
+        # Colors for each panel/line
+        cm = plt.get_cmap(cmap)
+        colors = cm(np.linspace(0.15, 0.85, n))
+
+        # Compute shared x-limits if requested
+        xlim = None
+        if sharex:
+            vmin = np.inf
+            vmax = -np.inf
+            for v in resolved:
+                s = pd.to_numeric(df[v], errors='coerce').dropna()
+                if not s.empty:
+                    vmin = min(vmin, s.min())
+                    vmax = max(vmax, s.max())
+            if np.isfinite(vmin) and np.isfinite(vmax):
+                pad = 0.02 * (vmax - vmin if vmax > vmin else 1.0)
+                xlim = (vmin - pad, vmax + pad)
+
+        # Combined KDE density plot (single axis)
+        if combine:
+            # Lazy import seaborn to avoid hard dependency at module import
+            try:
+                import seaborn as sns
+            except Exception:
+                sns = None
+
+            # In combined mode, figsize applies directly to the single subplot
+            if figsize is None:
+                comb_figsize = (max(6, 3 + 1.5 * n), 4)
+            else:
+                comb_figsize = figsize
+
+            fig, ax = plt.subplots(1, 1, figsize=comb_figsize)
+
+            for v, c in zip(resolved, colors):
+                data = pd.to_numeric(df[v], errors='coerce').dropna()
+                if data.empty:
+                    continue
+                if sns is not None:
+                    sns.kdeplot(data, ax=ax, fill=True, alpha=0.20, color=c, linewidth=1.2, label=v)
+                else:
+                    # Fallback: draw normalized histogram as a proxy
+                    ax.hist(data, bins=bins, density=True, color=c, alpha=0.20,
+                            edgecolor='none', label=v)
+
+            if xlim is not None:
+                ax.set_xlim(*xlim)
+            ax.set_title("Density (KDE) – Combined", fontsize=12)
+            ax.grid(alpha=0.3, linestyle='--')
+            ax.set_xlabel("Value")
+            ax.set_ylabel("Density")
+            ax.legend(loc='best', fontsize=8, frameon=False)
+
+            if save_path:
+                sp = Path(save_path)
+                if sp.suffix == "":
+                    sp = sp.with_suffix(".png")
+                fig.savefig(sp, dpi=300, bbox_inches='tight')
+
             if show:
                 plt.show()
             else:
-                plt.close()
+                plt.close(fig)
+            return fig
+
+        # Multi-panel histogram mode
+        # Grid: 1→1x1, 2→1x2, 3–4→2x2, 5–6→2x3, etc.
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+        # Treat figsize as size per subplot; compute total figure size
+        if figsize is None:
+            per_subplot = (4, 3)
+        else:
+            per_subplot = figsize
+        total_figsize = (per_subplot[0] * cols, per_subplot[1] * rows)
+
+        fig, axes = plt.subplots(rows, cols, figsize=total_figsize, sharex='all' if sharex else False)
+        axes = np.atleast_1d(axes).ravel()
+
+        for i, (v, c) in enumerate(zip(resolved, colors)):
+            ax = axes[i]
+            data = pd.to_numeric(df[v], errors='coerce').dropna()
+            ax.hist(data, bins=bins, color=c, alpha=0.85, density=density,
+                    edgecolor='white', linewidth=0.5)
+            if xlim is not None:
+                ax.set_xlim(*xlim)
+            ax.set_title(v, fontsize=10)
+            ax.grid(alpha=0.3, linestyle='--')
+            ax.set_xlabel("Value")
+            ax.set_ylabel("Density" if density else "Count")
+
+        # Hide any unused subplots
+        for j in range(i + 1, rows * cols):
+            axes[j].set_visible(False)
+
+        # Add date range (from requested interval)
+        try:
+            _start_dt = pd.to_datetime(self.time_interval[0])
+            _end_dt = pd.to_datetime(self.time_interval[1])
+            _span = (_end_dt - _start_dt) / pd.Timedelta(days=1)
+            _title_suffix = f" (span: {_span:.1f} days; {_start_dt:%Y-%m-%d} to {_end_dt:%Y-%m-%d})"
+        except Exception:
+            _title_suffix = ""
+        fig.suptitle(f"{self.station} – Variable Histograms{_title_suffix}", fontsize=13)
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+        if save_path:
+            sp = Path(save_path)
+            if sp.suffix == "":
+                sp = sp.with_suffix(".png")
+            sp = sp.with_name(sp.stem + "_hist" + sp.suffix)
+            fig.savefig(sp, dpi=300, bbox_inches='tight')
+            print(f"    Saved histogram figure to {sp}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return fig
+
+    def plot_diel(self, vars, algo=None, time_zone='UTC', y_range=None,
+                  figsize=(12, 4), gradient_cmap=None, save_path=None,
+                  show=True, make=True):
+        """
+        Plot full time series (left, 2/3 width) and diurnal curve (right, 1/3 width with mean ± std).
+        """
         
-        print(f"Generated plots for {len(param_combinations)} parameter combinations.")
+        if not make:
+            return None
+        
+        if self.results is None:
+            print("No results available.")
+            return None
+
+        # Normalize vars input
+        if isinstance(vars, str):
+            vars = [vars]
+            
+        if gradient_cmap is None:
+            gradient_cmap = 'viridis'
+
+        # Work dataframe
+        df = self.results.to_dataframe().reset_index()
+
+        # Ensure datetime column
+        if 'Epoch' not in df.columns:
+            print("Epoch column missing in results.")
+            return None
+
+        df['datetime'] = pd.to_datetime(df['Epoch'])
+        df['datetime_tz'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
+
+        # Resolve potential anomaly columns
+        resolved_vars = []
+        for v in vars:
+            if v in df.columns:
+                resolved_vars.append(v)
+            elif f"{v}_anom" in df.columns:
+                resolved_vars.append(f"{v}_anom")
+            else:
+                print(f"Variable {v} (or {v}_anom) not found, skipping.")
+        if not resolved_vars:
+            print("No valid variables to plot.")
+            return None
+
+        # Sort variables for consistent coloring
+        resolved_vars = sorted(resolved_vars)
+
+        # Build colors
+        n = len(resolved_vars)
+        cmap = plt.get_cmap(gradient_cmap)
+        colors = cmap(np.linspace(0, 1, n))
+
+        # Fractional hour (subhour precision)
+        dt_local = df['datetime_tz']
+        frac_hour = dt_local.dt.hour + dt_local.dt.minute / 60.0 + dt_local.dt.second / 3600.0
+        df['fractional_hour'] = frac_hour
+
+        # Diurnal cycle resolution: 5-min bins
+        df['fh_rounded'] = (df['fractional_hour'] * 12).round() / 12.0  # 5 min bins
+
+        # Compute diurnal mean and std
+        diurnal_stats = {}
+        for v in resolved_vars:
+            grouped = df.groupby('fh_rounded')[v].agg(['mean', 'std']).dropna()
+            diurnal_stats[v] = grouped
+
+        # Figure layout: gridspec with unequal widths
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(1, 2, width_ratios=[2, 1], wspace=0.25)
+
+        ax_ts = fig.add_subplot(gs[0, 0])
+        ax_diel = fig.add_subplot(gs[0, 1])
+
+        # Plot time series (left)
+        for v, c in zip(resolved_vars, colors):
+            ax_ts.plot(df['datetime'], df[v], color=c, label=v, linewidth=1)
+
+        ax_ts.set_xlabel("Time (UTC)")
+        ax_ts.set_ylabel("Value")
+        if y_range is not None:
+            ax_ts.set_ylim(*y_range)
+        ax_ts.legend(loc='upper right', ncol=1, fontsize=8, frameon=False)
+        ax_ts.set_title("Full Time Series")
+
+        # Diurnal curve (right) – mean ± std, full panel
+        for v, c in zip(resolved_vars, colors):
+            stats = diurnal_stats[v]
+            x = stats.index.values  # hours [0..24), 5-min bins
+            y = stats['mean'].values
+            s = stats['std'].values if 'std' in stats.columns else np.zeros_like(y)
+            ax_diel.plot(x, y, color=c, linewidth=1.5, label=v)
+            ax_diel.fill_between(x, y - s, y + s, color=c, alpha=0.2, linewidth=0)
+
+        ax_diel.set_xlim(0, 24)
+        ax_diel.set_xticks([0, 6, 12, 18, 24])
+        ax_diel.set_xlabel("Hour of Day")
+        ax_diel.set_ylabel("Mean ± 1σ")
+        if y_range is not None:
+            ax_diel.set_ylim(*y_range)
+        ax_diel.grid(alpha=0.5, linestyle='--')
+        ax_diel.legend(loc='upper right', ncol=1, fontsize=8, frameon=False)
+        ax_diel.set_title("Mean Diurnal Curve")
+
+        # FLEXIBLE DOY TICKS (moved here to apply after all plotting)
+        start_dt = df['datetime'].min()
+        end_dt = df['datetime'].max()
+        span_days = (end_dt - start_dt).total_seconds() / 86400.0
+        if span_days < 5:
+            ax_ts.xaxis.set_major_locator(mdates.DayLocator())
+            ax_ts.xaxis.set_minor_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+            # set minor tick labels to hours
+            ax_ts.xaxis.set_minor_formatter(mdates.DateFormatter('%H'))
+            ax_ts.tick_params(axis='x', which='minor', labelsize=8)
+        elif span_days < 15:
+            ax_ts.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+            ax_ts.xaxis.set_minor_locator(mdates.DayLocator())
+        elif span_days < 60:
+            ax_ts.xaxis.set_major_locator(mdates.DayLocator(interval=5))
+            ax_ts.xaxis.set_minor_locator(mdates.DayLocator(interval=1))
+        else:
+            ax_ts.xaxis.set_major_locator(mdates.DayLocator(interval=30))
+            ax_ts.xaxis.set_minor_locator(mdates.DayLocator(interval=5))
+        ax_ts.xaxis.set_major_formatter(mdates.DateFormatter('%j'))  # DOY
+        # set minor grid
+        ax_ts.grid(which='minor', axis='x', linestyle=':', alpha=0.8)
+        # set major grid
+        ax_ts.grid(which='major', axis='x', linestyle='-', alpha=0.7)
+        ax_ts.tick_params(axis='x', which='major', length=3, labelsize=10, color='grey')
+        ax_ts.tick_params(axis='x', which='minor', length=0, color='gray')
+        ax_ts.set_xlabel("Day of Year (DOY)",labelpad=20)
+        # Ensure the x-limits are set to the data range for robust locator/formatter behavior
+        ax_ts.set_xlim(start_dt, end_dt)
+
+        # MONTH AXIS BELOW (uses full width of time-series panel)
+        if span_days > 30:
+            try:
+                # todo: Some weird behavior still appears here
+                fig.subplots_adjust(bottom=0.20)
+                pos = ax_ts.get_position()
+                ax_month = fig.add_axes([pos.x0, pos.y0 - 0.05, pos.width, 0.07], sharex=ax_ts)
+                month_mid = pd.date_range(start=start_dt, end=end_dt, freq='MS') + pd.Timedelta('15D')
+                # keep only those within the data range
+                month_mid = month_mid[(month_mid >= start_dt) & (month_mid <= end_dt)]
+                ax_month.set_xlim(start_dt, end_dt)
+                ax_month.set_xticks(month_mid)
+                ax_month.set_xticklabels([d.strftime('%b') for d in month_mid], fontsize=8)
+                ax_month.tick_params(axis='x', length=0)
+                ax_month.yaxis.set_visible(False)
+                for spine in ax_month.spines.values():
+                    spine.set_visible(False)
+                # Make month axis transparent and behind main axis
+                # ax_month.patch.set_alpha(0.0)
+                # ax_month.set_zorder(0)
+                ax_ts.set_zorder(2)
+                # IMPORTANT: Re-enable DOY tick labels on the main axis (shared x would hide them)
+                ax_ts.tick_params(axis='x', which='both', labelbottom=True)
+                for lbl in ax_ts.get_xticklabels():
+                    lbl.set_visible(True)
+                    # set xorder
+                    lbl.set_zorder(3)
+            except Exception:
+                pass
+
+        plt.tight_layout()
+        # Add date range (from actual plotted data)
+        _span = (end_dt - start_dt) / pd.Timedelta(days=1)
+        fig.suptitle(
+            f"{self.station} – Time Series & Diurnal Curve (span: {_span:.1f} days; {start_dt:%Y-%m-%d} to {end_dt:%Y-%m-%d})",
+            fontsize=13
+        )
+
+        if save_path:
+            sp = Path(save_path)
+            if sp.suffix == "":
+                sp = sp.with_suffix(".png")
+            fig.savefig(sp, dpi=300, bbox_inches='tight')
+            print(f"    Saved diel figure to {sp}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
+        return fig
     
     def plot_by_parameter(self, new_interval=None, gnssband="VOD1", algo="tps", figsize=(12, 6), save_dir=None, show=True,
                           time_zone='etc/GMT+6', y_limits=None):
@@ -809,7 +1078,8 @@ class VODProcessor:
         y_limits : dict, optional
             Dictionary mapping variable names to (min, max) tuples for y-axis limits
         """
-        
+        # deprecated warning
+        print_color("Warning: plot_by_parameter is deprecated and may be removed in future versions. Consider using plot_diel or plot_hist instead.", "red")
         print(f"Plotting results for {self.station} with algo='{algo}' and gnssband='{gnssband}'")
         
         if self.results is None:
@@ -953,3 +1223,419 @@ class VODProcessor:
                 plt.close()
         
         print(f"Generated parameter comparison plots.")
+        
+    # print these statistics: Per SV and Constellation: number of total observation, fraction of obs in the total time
+    # series, mode of time-of-day distribution
+    def compute_sv_statistics(self, constellations=None, elevation_min=None, elevation_max=None,
+                              time_zone='UTC', make=True):
+        """
+        Compute statistics per satellite vehicle (SV) and constellation.
+        Parameters
+        ----------
+        constellations : list[str] | None
+            Names like ['gps','glonass','galileo','beidou'] (case-insensitive).
+        elevation_min, elevation_max : float | None
+            Optional elevation angle filter (deg).
+        time_zone : str
+            Time zone for local time-of-day conversion.
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with statistics per SV and constellation.
+        """
+        # turn of pandas warning about setting with copy
+        pd.options.mode.chained_assignment = None  # default='warn'
+        
+        if not make:
+            return None
+        
+        # Ensure parquet exists
+        if self.vod_file_temp is None or not self.vod_file_temp.exists():
+            print("VOD parquet file not found. Run process_vod first.")
+            return None
+        
+        # Columns of interest
+        usecols = ['Epoch', 'SV', 'Elevation']
+        try:
+            vod = pd.read_parquet(self.vod_file_temp, columns=usecols)
+        except Exception:
+            vod = pd.read_parquet(self.vod_file_temp)
+            vod = vod[[c for c in usecols if c in vod.columns]]
+        # make epoch a col from index
+        if vod.index.name == 'Epoch':
+            vod = vod.reset_index()
+        
+        def make_stats(sub_vod):
+            total_obs = len(sub_vod)
+            if total_obs == 0:
+                return pd.Series({
+                    'Total_Observations': 0,
+                    'Fraction_of_Time': 0.0,
+                    'Mode_Hour_of_Day': np.nan
+                })
+            # Time span in days
+            time_span_days = (sub_vod['Epoch'].max() - sub_vod['Epoch'].min()).total_seconds() / 86400.0
+            fraction_of_time = total_obs / (time_span_days) if time_span_days > 0 else 0.0
+            
+            # Mode of time-of-day distribution
+            sub_vod['datetime'] = pd.to_datetime(sub_vod['Epoch'])
+            sub_vod['datetime_local'] = sub_vod['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
+            sub_vod['hour_frac'] = (sub_vod['datetime_local'].dt.hour +
+                                   sub_vod['datetime_local'].dt.minute / 60.0 +
+                                   sub_vod['datetime_local'].dt.second / 3600.0)
+            mode_hour = sub_vod['hour_frac'].mode()
+            mode_hour_value = mode_hour.iloc[0] if not mode_hour.empty else np.nan
+            
+            return pd.Series({
+                'Total_Observations': total_obs,
+                'Fraction_of_Time': fraction_of_time,
+                'Mode_Hour_of_Day': mode_hour_value
+            })
+        
+        vod = vod.dropna(subset=['SV', 'Epoch']).copy()
+        vod['SV'] = vod['SV'].astype(str)
+        # Constellation filtering
+        if constellations is None:
+            requested = {'gps', 'glonass', 'galileo', 'beidou'}
+        else:
+            requested = {c.lower() for c in constellations}
+        letter_to_name = constellation_map  # already imported
+        name_to_letter = {v.lower(): k for k, v in letter_to_name.items()}
+        requested_letters = {name_to_letter[c] for c in requested if c in name_to_letter}
+        vod['Constellation'] = vod['SV'].str[0].map(letter_to_name)
+        vod = vod[vod['SV'].str[0].isin(requested_letters)]
+        # Drop SBAS if accidentally included
+        vod = vod[vod['SV'].str[0] != 'S']
+        
+        if elevation_min is not None:
+            vod = vod[vod['Elevation'] >= elevation_min]
+        if elevation_max is not None:
+            vod = vod[vod['Elevation'] <= elevation_max]
+        if vod.empty:
+            print("No data after elevation filtering.")
+            return None
+        
+        # -----------------------------------
+        # make stats
+        stats_list = []
+        for const in sorted(vod['Constellation'].dropna().unique()):
+            sub = vod[vod['Constellation'] == const]
+            for sv in sorted(sub['SV'].unique()):
+                sv_sub = sub[sub['SV'] == sv]
+                stats = make_stats(sv_sub)
+                stats['SV'] = sv
+                stats['Constellation'] = const
+                stats_list.append(stats)
+        stats_df = pd.DataFrame(stats_list)
+        return stats_df
+        
+    
+    def plot_overpass_tod(self, constellations=None, elevation_min=None, elevation_max=None,
+                          time_zone='UTC', min_points=50, bw_method=None,
+                          figsize=(10, 8), save_path=None, show=True, make=True,
+                          viz: str = "kde"):
+        """
+        Plot time-of-day overpass distribution for satellites grouped by constellation (Figure A)
+        and mean diurnal elevation angle per SV (Figure B).
+
+        Parameters
+        ----------
+        constellations : list[str] | None
+            Names like ['gps','glonass','galileo','beidou'] (case-insensitive).
+        elevation_min, elevation_max : float | None
+            Optional elevation angle filter (deg).
+        time_zone : str
+            Time zone for local time-of-day conversion.
+        min_points : int
+            Minimum points per SV to compute KDE (viz='kde').
+        bw_method : float | str | None
+            Bandwidth for gaussian_kde (viz='kde').
+        figsize : tuple
+            Figure size for both A and B.
+        save_path : Path | None
+            Base path; A and B saved as _A/_B variants if provided.
+        show : bool
+            Show figures.
+        make : bool
+            If False, skip plotting.
+        viz : {'kde','hist'}
+            Visualization for Figure A:
+              'kde'  -> circular KDE density (default)
+              'hist' -> 48 bins (0.5 h), step-wise density histogram (no fill)
+        Returns
+        -------
+        (Figure|None, Figure|None)
+            Tuple of figures (A: overpass distribution, B: mean diurnal elevation).
+        """
+        if not make:
+            return None, None
+        # Ensure parquet exists
+        if self.vod_file_temp is None or not self.vod_file_temp.exists():
+            print("VOD parquet file not found. Run process_vod first.")
+            return None, None
+
+        # Columns of interest
+        usecols = ['Epoch', 'SV', 'Elevation']
+        try:
+            vod = pd.read_parquet(self.vod_file_temp, columns=usecols)
+        except Exception:
+            vod = pd.read_parquet(self.vod_file_temp)
+            vod = vod[[c for c in usecols if c in vod.columns]]
+        
+        # make epoch a col from index
+        if vod.index.name == 'Epoch':
+            vod = vod.reset_index()
+
+        if vod.empty or 'SV' not in vod.columns or 'Epoch' not in vod.columns:
+            print("Required columns missing in parquet.")
+            return None
+
+        vod = vod.dropna(subset=['SV', 'Epoch']).copy()
+        vod['SV'] = vod['SV'].astype(str)
+
+        # Constellation filtering (first letter of SV, e.g. G21)
+        # Provided mapping in processing.aux: constellation_map = {'G':'GPS','R':'GLONASS','E':'Galileo','C':'BeiDou','S':'SBAS'}
+        # Normalize requested set
+        if constellations is None:
+            requested = {'gps', 'glonass', 'galileo', 'beidou'}
+        else:
+            requested = {c.lower() for c in constellations}
+
+        letter_to_name = constellation_map  # already imported
+        name_to_letter = {v.lower(): k for k, v in letter_to_name.items()}
+        requested_letters = {name_to_letter[c] for c in requested if c in name_to_letter}
+
+        vod['Constellation'] = vod['SV'].str[0].map(letter_to_name)
+        vod = vod[vod['SV'].str[0].isin(requested_letters)]
+        # Drop SBAS if accidentally included
+        vod = vod[vod['SV'].str[0] != 'S']
+
+        if vod.empty:
+            print("No data after constellation filtering.")
+            return None
+
+        # Elevation filtering
+        if elevation_min is not None:
+            vod = vod[vod['Elevation'] >= elevation_min]
+        if elevation_max is not None:
+            vod = vod[vod['Elevation'] <= elevation_max]
+        if vod.empty:
+            print("No data after elevation filtering.")
+            return None
+
+        # Time-of-day (fractional hour) in given timezone
+        vod['datetime'] = pd.to_datetime(vod['Epoch'])
+        vod['datetime_local'] = vod['datetime'].dt.tz_localize('UTC').dt.tz_convert(time_zone)
+        vod['hour_frac'] = (vod['datetime_local'].dt.hour +
+                            vod['datetime_local'].dt.minute / 60.0 +
+                            vod['datetime_local'].dt.second / 3600.0)
+
+        # Group SVs per constellation -> dict: {Constellation: {SV: hour_array}}
+        constellation_groups = {}
+        for const in sorted(vod['Constellation'].dropna().unique()):
+            sub = vod[vod['Constellation'] == const]
+            constellation_groups[const] = {
+                sv: sub[sub['SV'] == sv]['hour_frac'].values
+                for sv in sorted(sub['SV'].unique())
+            }
+
+        if not constellation_groups:
+            print("No constellation groups formed.")
+            return None, None
+
+        # Helper: build a gradient of n colors from a constellation base color
+        from matplotlib.colors import to_rgb
+        def gradient_colors_for_constellation(base_hex, n, start=0.35, end=1.0):
+            base = np.array(to_rgb(base_hex))
+            white = np.array([1.0, 1.0, 1.0])
+            tvals = np.linspace(start, end, max(n, 1))
+            # Blend white -> base to create perceptually clearer gradient
+            cols = [(white * (1 - t) + base * t) for t in tvals]
+            return np.clip(cols, 0, 1)
+
+        # --------------------
+        # Figure A: Distirbution of overpass times (density)
+        # --------------------
+        # Layout (max 2 columns)
+        n_const = len(constellation_groups)
+        cols = 2 if n_const > 1 else 1
+        rows = int(np.ceil(n_const / cols))
+        figA, axesA = plt.subplots(rows, cols, figsize=figsize, sharex=True, sharey=True)
+        axesA = np.atleast_1d(axesA).ravel()
+
+        from scipy.stats import gaussian_kde
+
+        def circular_kde(hours_array):
+            """Circular KDE over 0–24 using data wrapping (avoids taper at edges)."""
+            if len(hours_array) < min_points:
+                return None, None
+            extended = np.concatenate([hours_array, hours_array + 24, hours_array - 24])
+            try:
+                kde = gaussian_kde(extended, bw_method=bw_method)
+            except Exception:
+                return None, None
+            x_grid = np.linspace(0, 24, 288)  # 5-min resolution
+            y = kde(x_grid)
+            area = np.trapz(y, x_grid)
+            if area > 0:
+                y /= area
+            return x_grid, y
+
+        for ax, (const, sv_dict) in zip(axesA, constellation_groups.items()):
+            sv_list = list(sv_dict.keys())
+            n_svs = len(sv_list)
+            plasma = plt.get_cmap('plasma')
+            sv_colors = plasma(np.linspace(0.1, 0.9, max(n_svs, 1)))
+
+            if viz not in ("kde", "hist"):
+                raise ValueError("viz must be 'kde' or 'hist'")
+
+            # Predefine histogram bin edges (48 bins -> 0.5 h)
+            if viz == "hist":
+                bin_edges = np.linspace(0.0, 24.0, 49)  # 0.5 h edges
+
+            for sv, col in zip(sv_list, sv_colors):
+                hours = sv_dict[sv]
+                if viz == "kde":
+                    xg, yg = circular_kde(hours)
+                    if xg is None:
+                        continue
+                    ax.plot(xg, yg, color=col, linewidth=0.9, alpha=0.95, label=sv)
+                else:  # viz == "hist"
+                    if len(hours) == 0:
+                        continue
+                        
+                    counts, edges = np.histogram(hours, bins=bin_edges, density=False)
+                    # Step-wise histogram (no fill). Using 'post' so each bin spans to next edge.
+                    ax.step(edges[:-1], counts, where='post', color=col,
+                            linewidth=0.9, alpha=0.95, label=sv)
+                    # Close continuity at 24h (optional visual anchor)
+                    ax.plot([24.0], [counts[0]], marker='o', markersize=0, color=col)
+
+            ax.set_xlim(0, 24)
+            ax.set_xticks([0, 6, 12, 18, 24])
+            ax.set_xlabel("Hour of Day")
+            ax.set_ylabel("Density")
+            ax.set_title(f"{const}  (#sats: {n_svs})")
+            ax.grid(alpha=0.3, linestyle='--')
+            if 0 < n_svs <= 14:
+                ax.legend(fontsize=7, ncol=2, frameon=False)
+
+            # Colorbar per subplot (SV index order)
+            try:
+                norm = mpl.colors.Normalize(vmin=1, vmax=max(n_svs, 1))
+                sm = mpl.cm.ScalarMappable(cmap=plasma, norm=norm)
+                sm.set_array([])
+                cb = figA.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+                cb.set_label('SV index (order)', fontsize=8)
+                cb.set_ticks([1] if n_svs <= 1 else [1, n_svs])
+                cb.ax.tick_params(labelsize=7)
+            except Exception:
+                pass
+
+        # Hide unused axes in A
+        for j in range(len(constellation_groups), len(axesA)):
+            axesA[j].set_visible(False)
+
+        # Compute date span from filtered data
+        _start_dt = vod['datetime'].min()
+        _end_dt = vod['datetime'].max()
+        _span = (_end_dt - _start_dt) / pd.Timedelta(days=1)
+
+        figA.suptitle(
+            f"Distribution of overpass times (span: {_span:.1f} days; {_start_dt:%Y-%m-%d} to {_end_dt:%Y-%m-%d})",
+            fontsize=14
+        )
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        if save_path:
+            sp = Path(save_path)
+            if sp.suffix == "":
+                sp = sp.with_suffix(".png")
+            spA = sp.with_name(sp.stem + "_A" + sp.suffix)
+            figA.savefig(spA, dpi=300, bbox_inches='tight')
+            print(f"    Saved overpass figure (A) to {spA}")
+
+        # --------------------
+        # Figure B: Mean diurnal elevation angle per SV
+        # --------------------
+        # Precompute 5-min bins for mean elevation
+        vod['fh_rounded'] = (vod['hour_frac'] * 12).round() / 12.0  # 5-min bins
+
+        figB, axesB = plt.subplots(rows, cols, figsize=figsize, sharex=True, sharey=True)
+        axesB = np.atleast_1d(axesB).ravel()
+
+        for ax, (const, _) in zip(axesB, constellation_groups.items()):
+            # Subset for this constellation
+            sub = vod[vod['Constellation'] == const]
+            sv_list = sorted(sub['SV'].unique())
+            n_svs = len(sv_list)
+            # Use plasma colormap for satellites in this subplot
+            plasma = plt.get_cmap('plasma')
+            sv_colors = plasma(np.linspace(0.1, 0.9, max(n_svs, 1)))
+            # Plot mean elevation per SV across time-of-day bins
+            for sv, col in zip(sv_list, sv_colors):
+                ssub = sub[sub['SV'] == sv]
+                if ssub.empty:
+                    continue
+                stats = ssub.groupby('fh_rounded')['Elevation'].mean().dropna()
+                if stats.empty:
+                    continue
+                x = stats.index.values
+                y = stats.values
+                if x[0] == 0 and x[-1] < 24:
+                    x = np.append(x, 24.0)
+                    y = np.append(y, y[0])
+                ax.plot(x, y, color=col, linewidth=0.9, alpha=0.95, label=sv)
+            ax.set_xlim(0, 24)
+            ax.set_xticks([0, 6, 12, 18, 24])
+            ax.set_xlabel("Hour of Day")
+            ax.set_ylabel("Mean elevation (deg)")
+            # Include number of satellites in title
+            ax.set_title(f"{const}  (#sats: {n_svs})")
+            ax.grid(alpha=0.3, linestyle='--')
+            if 0 < n_svs <= 14:
+                ax.legend(fontsize=7, ncol=2, frameon=False)
+            # Add a plasma colorbar keyed to SV index order
+            try:
+                norm = mpl.colors.Normalize(vmin=1, vmax=max(n_svs, 1))
+                sm = mpl.cm.ScalarMappable(cmap=plasma, norm=norm)
+                sm.set_array([])
+                cb = figB.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+                cb.set_label('SV index (order)', fontsize=8)
+                if n_svs > 1:
+                    cb.set_ticks([1, n_svs])
+                else:
+                    cb.set_ticks([1])
+                cb.ax.tick_params(labelsize=7)
+            except Exception:
+                pass
+
+        # Hide unused axes in B
+        for j in range(len(constellation_groups), len(axesB)):
+            axesB[j].set_visible(False)
+
+        # Compute date span from filtered data
+        _start_dt = vod['datetime'].min()
+        _end_dt = vod['datetime'].max()
+        _span = (_end_dt - _start_dt) / pd.Timedelta(days=1)
+
+        figB.suptitle(
+            f"Mean diurnal elevation angle (span: {_span:.1f} days; {_start_dt:%Y-%m-%d} to {_end_dt:%Y-%m-%d})",
+            fontsize=14
+        )
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        if save_path:
+            sp = Path(save_path)
+            if sp.suffix == "":
+                sp = sp.with_suffix(".png")
+            spB = sp.with_name(sp.stem + "_B" + sp.suffix)
+            figB.savefig(spB, dpi=300, bbox_inches='tight')
+            print(f"    Saved overpass figure (B) to {spB}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(figA)
+            plt.close(figB)
+
+        return figA, figB
