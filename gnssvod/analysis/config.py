@@ -25,13 +25,18 @@ class AnomalyConfig:
     show: bool = False
     
     # ANOMALY DETECTION
+    # all
+    drop_clearsky: bool = False
+    drop_clearsky_threshold: float = 0.1
+    drop_outliersats: bool = False
+    
     # 1) Humphrey approach
     agg_fun_ts: str = "median"
     
     # 2) Konstantin approach
     agg_fun_vodoffset: str = "median"
     agg_fun_satincell: str = "median"
-    eval_num_obs_tps: bool = True
+    ks_strategy: str = "sv"  # or "sv", "con" for satellite vs constellation-based
     
     # 3) Alex approach
     anom_ak_timedelta: pd.Timedelta = pd.Timedelta(days=1)
@@ -39,3 +44,19 @@ class AnomalyConfig:
     # Misc calculations
     calculate_biomass_bins: bool = False
     constellations: list = None  # e.g., ['GPS', 'GALILEO']
+    
+    
+
+# Variable label lookup (used in plotting)
+# Keys are method codes (parsed from pattern: VODx_anom_<code>)
+VAR_LABELS = {
+    "vh": "VOD (vh)",
+    "ak": "VOD (ak)",
+    "ks": "VOD (ks, all filt.)",
+    "ksak": "VOD (ksak)",
+    "anom": "VOD (anom)",  # fallback for generic anomalies
+    "ks_con": "VOD (ks, con)",
+    "ks_clearsky": "VOD (ks, clear)",
+    "ks_nooutliers": "VOD (ks, noout)",
+    "ks_backup": "VOD (ks, before)"
+}

@@ -2,13 +2,12 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 
-from analysis.calculate_anomaly_functions import calc_anomaly_ak, calc_anomaly_ksak, calc_anomaly_vh, \
+from analysis.calculate_anomaly_functions import _drop_clearsky_cells, calc_anomaly_ak, calc_anomaly_ksak, \
+    calc_anomaly_vh, \
     calculate_biomass_binned_anomalies, \
     calculate_extinction_coefficient, \
     calc_anomaly_ks, \
-    create_aggregation_dict, vod_fun
-from gnssvod import hemibuild
-from processing.export_vod_funs import plot_hemi
+    drop_outlier_sats, vod_fun
 from processing.settings import canopy_height, z0
 
 
@@ -58,6 +57,7 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     # Statistical metrics
     
     sv_counts = vod.reset_index().groupby('Epoch')['SV'].nunique()
+    vod_backup = vod.copy()
 
     # -----------------------------------
     # calculate extinction coefficient if requested
@@ -76,9 +76,29 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
         'temporal_resolution': cfg.temporal_resolution,
         'agg_fun_vodoffset': cfg.agg_fun_vodoffset,
         'agg_fun_satincell': cfg.agg_fun_satincell,
-        'eval_num_obs_tps': cfg.eval_num_obs_tps
+        "agg_fun_ts": cfg.agg_fun_ts
     }
     
+    # -----------------------------------
+    # Drop clear-sky cells if requested
+
+    if cfg.drop_clearsky:
+        vod = _drop_clearsky_cells(band_ids, vod, cfg.drop_clearsky_threshold)
+        # for isolated use
+        vod_clearsky = _drop_clearsky_cells(band_ids, vod_backup, cfg.drop_clearsky_threshold)
+    else:
+        vod_clearsky = vod_backup.copy()
+        
+    # -----------------------------------
+    # Drop outlier satellites if requested
+    
+    rmv_svs = ["R13", "E06", "E29"]
+    if cfg.drop_outliersats:
+        vod = drop_outlier_sats(vod, rmv_svs)
+        vod_remove_outliers = drop_outlier_sats(vod_backup, rmv_svs)
+    else:
+        vod_remove_outliers = vod_backup.copy()
+        
     # -----------------------------------
     # Method 1: Vincent's method (phi_theta) - short tp
     # -----------------------------------
@@ -87,8 +107,14 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     # -----------------------------------
     # Method 2: Konstantin's extension >(phi_theta_sv) - short tps
     # -----------------------------------
-    vod_ts_2 = calc_anomaly_ks(vod, band_ids, suffix="ks", show=show, **kwargs_anom)
+    # calc all settings
+    vod_ts_2 = calc_anomaly_ks(vod, band_ids, ks_strategy=cfg.ks_strategy, suffix="ks", show=show, **kwargs_anom)
     
+    vod_ts_2_backup = calc_anomaly_ks(vod_backup, band_ids, ks_strategy="sv", suffix="ks_backup", show=show, **kwargs_anom)
+    vod_ts_2con = calc_anomaly_ks(vod_backup, band_ids, ks_strategy="con", suffix="ks_con", show=show, **kwargs_anom)
+    vod_ts_2clearsky = calc_anomaly_ks(vod_clearsky, band_ids, ks_strategy="sv", suffix="ks_clearsky", show=show, **kwargs_anom)
+    vod_ts_2outliers = calc_anomaly_ks(vod_remove_outliers, band_ids, ks_strategy="sv", suffix="ks_nooutliers", show=show, **kwargs_anom)
+
     # -----------------------------------
     # Method 3: Alex' approach
     # -----------------------------------
@@ -96,7 +122,7 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     
     # -----------------------------------
     # Method 4: Konstantin and Alex combined approach
-    vod_ts_4 = calc_anomaly_ksak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ksak", **kwargs_anom)
+    vod_ts_4, _ = calc_anomaly_ksak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ksak", **kwargs_anom)
     
     
     # -----------------------------------
@@ -187,10 +213,14 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     
     # -----------------------------------
     # MERGE ALL TIME SERIES
-    vod_ds_combined = (vod_ts_1.join(vod_ts_2).join(vod_ts_4).
-                       join(vod_ts_3).
-                       join(ds3).
-                       join(vod_ts_sbas))
+    
+    dataset_to_join = [vod_ts_1, vod_ts_2_backup, vod_ts_4, vod_ts_3, ds3, vod_ts_sbas,
+                       # remove em later, just for testing
+                       vod_ts_2clearsky, vod_ts_2outliers, vod_ts_2con, vod_ts_2]
+
+    vod_ds_combined = vod_ts_1
+    for ds in dataset_to_join[1:]:
+        vod_ds_combined = vod_ds_combined.join(ds, how='outer')
     
     if not vod_gps_gal.empty:
         vod_ds_combined = vod_ds_combined.join(vod_ts_con2)

@@ -30,8 +30,10 @@ def plot_hemi(vod, patches, var="VOD1_mean", type="vod", sbas_sats=None, show_sb
             raise ValueError(f"Unknown transform: {transform}. Supported: 'log10'.")
     
     hist = ipatches[var].dropna()
-    if clim == "auto":
+    if clim == "auto" and type != "vod":
         vmin, vmax = hist.min(), hist.max()
+    elif clim == "auto" and type == "vod":
+        vmin, vmax = -hist.abs().max(), hist.abs().max()
     elif clim == "perc_975":
         vmin, vmax = np.percentile(hist, 2.5), np.percentile(hist, 97.5)
     else:

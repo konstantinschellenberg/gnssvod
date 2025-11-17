@@ -286,7 +286,7 @@ def calc_anomaly_vh(vod, band_ids, suffix="",
 
 
 
-def calc_anomaly_ks(vod, band_ids, suffix="",
+def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
                     temporal_resolution=30, **kwargs):
     """
     Konstantin (SV-specific per-cell) anomaly calculation — concise code, verbose annotations.
@@ -355,10 +355,13 @@ def calc_anomaly_ks(vod, band_ids, suffix="",
 
     agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
     agg_fun_ts = kwargs.get("agg_fun_ts", "median")
-    eval_num_obs_tps = kwargs.get("eval_num_obs_tps", False)
-    show = kwargs.get("show", False)
+    # eval_num_obs_tps = kwargs.get("eval_num_obs_tps", False)
+    # show = kwargs.get("show", False)
     freq = _to_freq(temporal_resolution)
     _suffix = f"_{suffix}" if suffix else ""
+    assert ks_strategy in ("sv","con"), "ks_strategy must be 'sv' or 'con'"
+    
+    strategy = "SV" if ks_strategy == "sv" else "Constellation"
 
     # ---- input validation / index normalization ------------------------------
     work = vod.copy()
@@ -377,16 +380,39 @@ def calc_anomaly_ks(vod, band_ids, suffix="",
     # Ensure CellID exists
     if 'CellID' not in work.columns:
         raise ValueError("vod must contain a 'CellID' column.")
+    
+    if ks_strategy == "con":
+        # group sv to constellation mapping
+        # GPS -> G, GALILEO -> E, GLONASS -> R, BEIDOU -> C
+        def sv_to_con(sv):
+            if sv.startswith('G'):
+                return 'GPS'
+            elif sv.startswith('E'):
+                return 'GALILEO'
+            elif sv.startswith('R'):
+                return 'GLONASS'
+            elif sv.startswith('C'):
+                return 'BEIDOU'
+            else:
+                return 'OTHER'
+        sv_levels = work.index.get_level_values('SV')
+        con = sv_levels.map(sv_to_con)
+        # add con as column
+        work = work.reset_index()
+        work['Constellation'] = con
+        # make Epoch and con indices
+        work = work.set_index(['Epoch', 'Constellation'], drop=True)
 
     work = work.sort_index()  # deterministic grouping
 
     # ---- 1) per-(SV, CellID) means ------------------------------------------
     # Compute means for all bands at once; columns become e.g. 'VOD1_mean'
     sv_cell_means = (
-        work.groupby(['SV', 'CellID'])[band_ids]
+        work.groupby(["SV", 'CellID'])[band_ids]
             .mean()
             .add_suffix('_mean')
     )
+    
     # Join means back to each row using the two keys
     work = work.join(sv_cell_means, on=['SV', 'CellID'])
 
@@ -399,7 +425,7 @@ def calc_anomaly_ks(vod, band_ids, suffix="",
             continue
         # Per-SV offset: median/mean over raw values for that band and SV
         # transform aligns offsets back to each row (same index shape)
-        offset_sv = work.groupby('SV')[band].transform(agg_fun_vodoffset)
+        offset_sv = work.groupby(strategy)[band].transform(agg_fun_vodoffset)
         anom_col = f"{band}_anom{_suffix}"
         work[anom_col] = work[band] - work[mean_col] + offset_sv
         anom_cols.append(anom_col)
@@ -409,13 +435,13 @@ def calc_anomaly_ks(vod, band_ids, suffix="",
 
     # ---- (Optional) evaluate observations per (SV, CellID) -------------------
     # Keep behavior from the previous implementation; gated by flags.
-    if eval_num_obs_tps and show:
-        try:
-            counts = work.groupby(['SV', 'CellID']).size().to_frame('n')
-            # Reuse the existing plotting helper
-            plot_sv_observation_counts(counts.reset_index(), min_threshold=10, figsize=(6, 4))
-        except Exception:
-            pass
+    # if eval_num_obs_tps and show:
+    #     try:
+    #         counts = work.groupby(['SV', 'CellID']).size().to_frame('n')
+    #         # Reuse the existing plotting helper
+    #         plot_sv_observation_counts(counts.reset_index(), min_threshold=10, figsize=(6, 4))
+    #     except Exception:
+    #         pass
 
     # ---- 3) temporal aggregation on 'Epoch' ---------------------------------
     ts = (
@@ -845,3 +871,30 @@ def calculate_biomass_binned_anomalies(vod, vod_avg, band_ids, con=None, biomass
                 plt.show()
 
     return combined_results
+
+
+def _drop_clearsky_cells(band_ids, vod_df, threshold):
+    vod_clearsky = vod_df.copy()
+    _vod_avg = (
+        vod_df
+        .groupby('CellID')[band_ids]
+        .mean()
+        .add_suffix('_mean')
+    )
+    
+    # flag all cellid with vod_avg < threshold as clear-sky cells
+    clear_sky_cells = _vod_avg[(_vod_avg < threshold).any(axis=1)].index.tolist()
+    # remove clear-sky cells from vod
+    vod_clearsky = vod_clearsky[~vod_clearsky["CellID"].isin(clear_sky_cells)]
+    del _vod_avg
+    return vod_clearsky
+
+
+def drop_outlier_sats(vod_df, rmv_svs):
+    # GPS: None
+    # GLONASS: R13
+    # GALILEO: E06, E29
+    vod_no_outliers = vod_df.copy()
+    if rmv_svs:
+        vod_no_outliers = vod_no_outliers[~vod_no_outliers.index.get_level_values('SV').isin(rmv_svs)]
+    return vod_no_outliers
