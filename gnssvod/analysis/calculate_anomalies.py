@@ -2,16 +2,16 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 
-from analysis.calculate_anomaly_functions import _drop_clearsky_cells, calc_anomaly_ak, calc_anomaly_ksak, \
+from analysis.calculate_anomaly_functions import calc_anomaly_ak, calc_anomaly_ksak, \
     calc_anomaly_vh, \
     calculate_biomass_binned_anomalies, \
     calculate_extinction_coefficient, \
     calc_anomaly_ks, \
-    drop_outlier_sats, vod_fun
+    vod_fun
 from processing.settings import canopy_height, z0
 
 
-def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
+def _calculate_anomaly(vod, vod_avg, band_ids, cfg, show=False, **kwargs):
     """
     Calculate VOD anomalies using both methods.
     
@@ -51,13 +51,11 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
         vod_avg : pandas.DataFrame
             Average VOD values per grid cell
     """
-    
-    
+
     # -----------------------------------
     # Statistical metrics
     
     sv_counts = vod.reset_index().groupby('Epoch')['SV'].nunique()
-    vod_backup = vod.copy()
 
     # -----------------------------------
     # calculate extinction coefficient if requested
@@ -76,61 +74,64 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
         'temporal_resolution': cfg.temporal_resolution,
         'agg_fun_vodoffset': cfg.agg_fun_vodoffset,
         'agg_fun_satincell': cfg.agg_fun_satincell,
-        "agg_fun_ts": cfg.agg_fun_ts
+        "agg_fun_ts": cfg.agg_fun_ts,
+        "drop_clearsky_threshold": cfg.drop_clearsky_threshold,
+        "drop_dips_threshold": cfg.drop_dips_threshold,
+        "drop_dips_loessfrac": cfg.drop_dips_loessfrac
     }
-    
-    # -----------------------------------
-    # Drop clear-sky cells if requested
 
-    if cfg.drop_clearsky:
-        vod = _drop_clearsky_cells(band_ids, vod, cfg.drop_clearsky_threshold)
-        # for isolated use
-        vod_clearsky = _drop_clearsky_cells(band_ids, vod_backup, cfg.drop_clearsky_threshold)
-    else:
-        vod_clearsky = vod_backup.copy()
-        
-    # -----------------------------------
-    # Drop outlier satellites if requested
     
-    rmv_svs = ["R13", "E06", "E29"]
-    if cfg.drop_outliersats:
-        vod = drop_outlier_sats(vod, rmv_svs)
-        vod_remove_outliers = drop_outlier_sats(vod_backup, rmv_svs)
-    else:
-        vod_remove_outliers = vod_backup.copy()
-        
     # -----------------------------------
     # Method 1: Vincent's method (phi_theta) - short tp
     # -----------------------------------
-    vod_ts_1, vod_avg = calc_anomaly_vh(vod, band_ids, suffix="vh", show=show, **kwargs_anom)
+    vod_ts_1 = calc_anomaly_vh(vod, band_ids, suffix="vh", show=show, temporal_resolution=cfg.temporal_resolution,
+                                        agg_fun_vodoffset="median", agg_fun_ts="median")
 
     # -----------------------------------
     # Method 2: Konstantin's extension >(phi_theta_sv) - short tps
     # -----------------------------------
     # calc all settings
-    vod_ts_2 = calc_anomaly_ks(vod, band_ids, ks_strategy=cfg.ks_strategy, suffix="ks", show=show, **kwargs_anom)
+    vod_ts_2 = calc_anomaly_ks(vod, band_ids, ks_strategy=cfg.ks_strategy, drop_dips=cfg.drop_dips,
+                               drop_outliersats=cfg.drop_outliersats, drop_clearsky=cfg.drop_clearsky,
+                               suffix="ks", show=show, **kwargs_anom)
     
-    vod_ts_2_backup = calc_anomaly_ks(vod_backup, band_ids, ks_strategy="sv", suffix="ks_backup", show=show, **kwargs_anom)
-    vod_ts_2con = calc_anomaly_ks(vod_backup, band_ids, ks_strategy="con", suffix="ks_con", show=show, **kwargs_anom)
-    vod_ts_2clearsky = calc_anomaly_ks(vod_clearsky, band_ids, ks_strategy="sv", suffix="ks_clearsky", show=show, **kwargs_anom)
-    vod_ts_2outliers = calc_anomaly_ks(vod_remove_outliers, band_ids, ks_strategy="sv", suffix="ks_nooutliers", show=show, **kwargs_anom)
-
+    # Experiment on effects of different filtering steps
+    # vod_ts_2backup = calc_anomaly_ks(vod, band_ids, ks_strategy="sv", drop_dips=False,
+    #                                   drop_outliersats=False, drop_clearsky=False,
+    #                                   suffix="ks_backup", show=show, **kwargs_anom)
+    # vod_ts_2con = calc_anomaly_ks(vod, band_ids, ks_strategy="con", suffix="ks_con", drop_dips=False,
+    #                               drop_outliersats=False, drop_clearsky=False,
+    #                               show=show, **kwargs_anom)
+    # vod_ts_2clearsky = calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="ks_clearsky", drop_dips=False,
+    #                                    drop_outliersats=False, drop_clearsky=True,
+    #                                    show=show, **kwargs_anom)
+    # vod_ts_2outliers = calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="ks_nooutliers", drop_dips=False,
+    #                                    drop_outliersats=True, drop_clearsky=False,
+    #                                    show=show, **kwargs_anom)
+    # vod_ts_2dropdips = calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="ks_nodips", drop_dips=True,
+    #                                    drop_outliersats=False, drop_clearsky=False,
+    #                                    show=show, **kwargs_anom)
+    #
+    # other_vods = [vod_ts_2backup, vod_ts_2con, vod_ts_2clearsky, vod_ts_2outliers, vod_ts_2dropdips]
+    other_vods=None
     # -----------------------------------
     # Method 3: Alex' approach
     # -----------------------------------
-    vod_ts_3 = calc_anomaly_ak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ak", **kwargs_anom)
+    # vod_ts_3 = calc_anomaly_ak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ak", **kwargs_anom)
     
     # -----------------------------------
     # Method 4: Konstantin and Alex combined approach
-    vod_ts_4, _ = calc_anomaly_ksak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ksak", **kwargs_anom)
-    
+    # vod_ts_4, _ = calc_anomaly_ksak(vod, band_ids, timedelta=cfg.anom_ak_timedelta, suffix="ksak", **kwargs_anom)
     
     # -----------------------------------
     # Calculate VOD anomalies for GPS and GALILEO separately
     
     vod_gps_gal = vod[vod.index.get_level_values('SV').str.startswith(('G', 'E'))]
     if not vod_gps_gal.empty:
-        vod_ts_con2 = calc_anomaly_ks(vod_gps_gal, band_ids, suffix="gps+gal", **kwargs_anom)
+        # twin of vod_ts_2 but only gps + galileo
+        vod_ts_con2 = calc_anomaly_ks(vod_gps_gal, band_ids, suffix="gps+gal", ks_strategy=cfg.ks_strategy, drop_dips=cfg.drop_dips,
+                                      drop_outliersats=cfg.drop_outliersats, drop_clearsky=cfg.drop_clearsky,
+                                      **kwargs_anom)
   
     # end anomaly calculations
     # -----------------------------------
@@ -152,7 +153,7 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
         lambda x: x['CellID'].nunique() / total_possible_cells * 100
     ).rename('C_t_perc')
     
-    # #######
+    # -----------------------------------
     # Calculate Ci(t): Binned percentage (by VOD percentiles) of sky plots covered per time period
     # todo: requires reimplementation
     
@@ -214,9 +215,9 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     # -----------------------------------
     # MERGE ALL TIME SERIES
     
-    dataset_to_join = [vod_ts_1, vod_ts_2_backup, vod_ts_4, vod_ts_3, ds3, vod_ts_sbas,
-                       # remove em later, just for testing
-                       vod_ts_2clearsky, vod_ts_2outliers, vod_ts_2con, vod_ts_2]
+    dataset_to_join = [vod_ts_1, ds3, vod_ts_sbas,vod_ts_2]
+    if other_vods is not None:
+        dataset_to_join += other_vods
 
     vod_ds_combined = vod_ts_1
     for ds in dataset_to_join[1:]:
@@ -228,13 +229,4 @@ def _calculate_anomaly(vod, band_ids, cfg, show=False, **kwargs):
     if cfg.calculate_biomass_bins:
         vod_ds_combined = vod_ds_combined.join(vod_ts_anom_biomass_gps)
         
-    # -----------------------------------
-    # if param cols don't exist, make them here
-    # param_cols = ['angular_resolution', 'angular_cutoff', 'temporal_resolution']
-    #
-    # vod_ds_combined[param_cols] = pd.DataFrame(
-    #     [[cfg.angular_resolution, cfg.angular_cutoff, cfg.temporal_resolution]],
-    #     index=vod_ds_combined.index
-    # )
-    
-    return (vod_ds_combined, vod_avg)
+    return vod_ds_combined

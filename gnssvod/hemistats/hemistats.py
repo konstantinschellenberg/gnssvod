@@ -130,7 +130,20 @@ def hemibuild(angular_resolution,cutoff=0):
     
     """
     # calculate number of rings
-    ringlims = np.arange(angular_resolution/2,90-cutoff,angular_resolution)
+    
+    # todo: implement tuple cutoff (min,max)
+    if isinstance(cutoff,int):
+        # backwards compatibility for single integer cutoff
+        cutoff_ele = 90 - cutoff
+        ringlims = np.arange(angular_resolution/2, cutoff_ele,angular_resolution)
+    elif isinstance(cutoff,tuple):
+        # new implementation for tuple cutoff (min,max)
+        cutoff_ele = (90 - cutoff[1], 90 - cutoff[0])
+        ringlims = np.arange(angular_resolution/2, cutoff_ele[1],angular_resolution)
+        ringlims = ringlims[ringlims>=cutoff_ele[0]]
+    else:
+        raise ValueError("cutoff must be an integer or a tuple of two integers (min,max)")
+    
     # calculate area of a cell
     cell_area = 2*np.pi*(1-np.cos(np.deg2rad(angular_resolution/2)))
 

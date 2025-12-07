@@ -29,6 +29,9 @@ class AnomalyConfig:
     drop_clearsky: bool = False
     drop_clearsky_threshold: float = 0.1
     drop_outliersats: bool = False
+    drop_dips: bool = False
+    drop_dips_threshold: float = 0.95
+    drop_dips_loessfrac: float = 0.1  # loess window for dip detection smoothing
     
     # 1) Humphrey approach
     agg_fun_ts: str = "median"
@@ -44,7 +47,6 @@ class AnomalyConfig:
     # Misc calculations
     calculate_biomass_bins: bool = False
     constellations: list = None  # e.g., ['GPS', 'GALILEO']
-    
     
 
 # Variable label lookup (used in plotting)

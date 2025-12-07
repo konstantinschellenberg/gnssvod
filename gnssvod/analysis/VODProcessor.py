@@ -358,13 +358,7 @@ class VODProcessor:
                 if self.debug:
                     print("Replacing SBAS coordinates with fixed values...")
                 vod = _replace_sbas_coordinates(vod, SBAS_IDENT, debug=self.debug)
-            
-            # -----------------------------------
-            # Build hemispheric grid and add CellID
-            hemi = gv.hemibuild(cfg.angular_resolution, cfg.angular_cutoff)
-            if self.debug:
-                print(f"Built hemisphere grid: AR={cfg.angular_resolution}, AC={cfg.angular_cutoff}")
-            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)
+
             
             # -----------------------------------
             # Filter SV from cfg.constellations if specified
@@ -376,17 +370,32 @@ class VODProcessor:
                     k for k, v in constellation_map.items()
                     if k.lower() in letters_requested or (isinstance(v, str) and v.lower() in letters_requested)
                 }
-                sv_level = vod_with_cells.index.get_level_values('SV').astype(str)
+                sv_level = vod.index.get_level_values('SV').astype(str)
                 initial_count = sv_level.nunique()
                 mask = sv_level.str[0].isin(letters)
-                vod_with_cells = vod_with_cells[mask]
-                final_count = vod_with_cells.index.get_level_values('SV').astype(str).nunique()
-                
+                vod = vod[mask]
+                final_count = vod.index.get_level_values('SV').astype(str).nunique()
+            
+            # -----------------------------------
+            # Build hemispheric grid and add CellID
+            hemi = gv.hemibuild(cfg.angular_resolution, cfg.angular_cutoff)
+            if self.debug:
+                print(f"Built hemisphere grid: AR={cfg.angular_resolution}, AC={cfg.angular_cutoff}")
+            vod_with_cells = hemi.add_CellID(vod.copy(), drop=True)
+            
+            # Hemispheric mean VOD per cell
+            vod_avg = (
+                vod_with_cells.groupby(['CellID'])[self.band_ids]
+                .mean()
+                .add_suffix('_mean')
+            )
+            
             # -----------------------------------
             # -----------------------------------
             # Calculate anomalies
-            vod_ts_combined, vod_avg = _calculate_anomaly(
+            vod_ts_combined = _calculate_anomaly(
                 vod=vod_with_cells,
+                vod_avg=vod_avg,
                 band_ids=self.band_ids,
                 cfg=cfg
             )
@@ -1134,6 +1143,9 @@ class VODProcessor:
         diurnal_stats = {}
         for v in resolved_vars:
             grouped = df.groupby('fh_rounded')[v].agg(['mean', 'std']).dropna()
+            # coerce cols to float
+            grouped['mean'] = pd.to_numeric(grouped['mean'], errors='coerce')
+            grouped['std'] = pd.to_numeric(grouped['std'], errors='coerce')
             diurnal_stats[v] = grouped
         
         # Figure layout: gridspec with unequal widths
@@ -1233,7 +1245,6 @@ class VODProcessor:
             except Exception:
                 pass
         
-        plt.tight_layout()
         # Add date range (from actual plotted data)
         _span = (end_dt - start_dt) / pd.Timedelta(days=1)
         fig.suptitle(
@@ -1245,7 +1256,7 @@ class VODProcessor:
             sp = Path(save_path)
             if sp.suffix == "":
                 sp = sp.with_suffix(".png")
-            fig.savefig(sp, dpi=300, bbox_inches='tight')
+            fig.savefig(sp, dpi=300)
             print(f"    Saved diel figure to {sp}")
         
         if show:
@@ -1481,13 +1492,11 @@ class VODProcessor:
         except Exception:
             pass
 
-        plt.tight_layout()
-
         if save_path:
             sp = Path(save_path)
             if sp.suffix == "":
                 sp = sp.with_suffix(".png")
-            fig.savefig(sp, dpi=300, bbox_inches='tight')
+            fig.savefig(sp, dpi=300)
             print(f"    Saved time series figure to {sp}")
 
         if show:
@@ -1571,17 +1580,11 @@ class VODProcessor:
         letter_to_name = constellation_map  # already imported
         name_to_letter = {v.lower(): k for k, v in letter_to_name.items()}
         requested_letters = {name_to_letter[c] for c in requested if c in name_to_letter}
-        
         vod['Constellation'] = vod['SV'].str[0].map(letter_to_name)
         vod = vod[vod['SV'].str[0].isin(requested_letters)]
         # Drop SBAS if accidentally included
         vod = vod[vod['SV'].str[0] != 'S']
         
-        if vod.empty:
-            print("No data after constellation filtering.")
-            return None
-        
-        # Elevation filtering
         if elevation_min is not None:
             vod = vod[vod['Elevation'] >= elevation_min]
         if elevation_max is not None:
@@ -1885,3 +1888,307 @@ class VODProcessor:
                 plt.close(figA)
             plt.close(figB)
         return figA, figB
+    
+    def plot_von_incidenceangle(
+        self,
+        vod_col='VOD1',
+        theta_col='IncidenceAngle',
+        binsize=5.0,
+        constellations=None,
+        figsize_all=(8, 4),
+        figsize_const=(10, 6),
+        save_path=None,
+        show=True,
+        make=True,
+        remove_open_sky=False,
+        biomass_normalized=False,
+        open_sky_threshold=0.1,
+        angular_resolution=1.0,
+    ):
+        """
+        Plot VOD vs incidence angle (theta) using 5° boxplot bins.
+        Set remove_open_sky=True to drop cells whose mean VOD is below open_sky_threshold
+        (after assigning CellIDs from a hemispheric grid built with the supplied angular
+        resolution/cutoff).
+        Returns
+        -------
+        (Figure|None, Figure|None)
+            Tuple with the aggregated figure and the per-constellation figure.
+        """
+        pd.options.mode.chained_assignment = None
+        if not make:
+            return None, None
+        print_color("Plotting incidence-angle distributions...")
+        
+        if binsize <= 0:
+            raise ValueError("binsize must be positive.")
+        if self.vod_file_temp is None or not self.vod_file_temp.exists():
+            print("VOD parquet file not found. Run process_vod first.")
+            return None, None
+
+        requested_cols = list(dict.fromkeys(['SV', theta_col, vod_col]))
+        if remove_open_sky:
+            for extra_col in ('Azimuth', 'Elevation'):
+                if extra_col not in requested_cols:
+                    requested_cols.append(extra_col)
+        try:
+            vod = pd.read_parquet(self.vod_file_temp, columns=requested_cols)
+        except Exception:
+            vod = pd.read_parquet(self.vod_file_temp)
+
+        if 'SV' not in vod.columns:
+            print("SV column missing in VOD parquet.")
+            return None, None
+
+        def _resolve_column(df, preferred, keywords):
+            if preferred in df.columns:
+                return preferred
+            for col in df.columns:
+                if any(key in col.lower() for key in keywords):
+                    print(f"    Column '{preferred}' not found, using '{col}' instead.")
+                    return col
+            return None
+
+        def _format_interval(interval):
+            left = int(np.floor(interval.left))
+            right = int(np.ceil(interval.right))
+            return f"({left}, {right}]"
+
+        def _drop_clearsky_cells_local(df, value_col, threshold):
+            if 'CellID' not in df.columns:
+                print("CellID column missing; skipped open-sky filtering.")
+                return df
+            cell_means = df.groupby('CellID')[value_col].mean()
+            keep_ids = cell_means[cell_means >= threshold].index
+            return df[df['CellID'].isin(keep_ids)]
+
+        theta_target = _resolve_column(vod, theta_col, ['theta', 'incidence', 'elev'])
+        vod_target = _resolve_column(vod, vod_col, ['vod'])
+        if theta_target is None or vod_target is None:
+            print("Required theta/VOD columns not found.")
+            return None, None
+
+        cols_to_keep = ['SV', theta_target, vod_target]
+        if remove_open_sky:
+            cols_to_keep.extend(["Azimuth"])
+        vod = vod[cols_to_keep].copy()
+        vod[vod_target] = pd.to_numeric(vod[vod_target], errors='coerce')
+
+        if remove_open_sky:
+            missing = [c for c in ('Azimuth', 'Elevation') if c not in vod.columns]
+            if missing:
+                print(f"Cannot remove open sky; missing columns: {missing}")
+            else:
+                hemi = gv.hemibuild(angular_resolution, 0)
+                vod.set_index('SV', inplace=True, append=True)
+                vod = hemi.add_CellID(vod.copy(), drop=True)
+                before = len(vod)
+                vod = _drop_clearsky_cells_local(vod, vod_target, open_sky_threshold)
+                removed = before - len(vod)
+                if removed > 0:
+                    print(f"    Removed {removed} open-sky samples (<{open_sky_threshold} VOD).")
+
+        theta_values = pd.to_numeric(vod[theta_target], errors='coerce')
+        if theta_target.lower().startswith('elev'):
+            theta_values = 90.0 - theta_values
+        vod['_theta'] = theta_values
+        
+        # drop obs where theta_values > 90.0
+        vod = vod[vod['_theta'] <= 90.0]
+        
+        # plot histogram of incidence angles
+        fig_hist, ax_hist = plt.subplots(figsize=(4,4))
+        ax_hist.hist(vod['_theta'], bins=range(0, 95, 5), color='#0b3c5d', alpha=0.7, edgecolor='none')
+        ax_hist.set_title("Histogram of incidence angles")
+        ax_hist.set_xlabel("Incidence angle (deg)")
+        ax_hist.set_ylabel("Count")
+        plt.tight_layout()
+        plt.show()
+        
+        vod = vod.dropna(subset=['_theta', vod_target])
+        if vod.empty:
+            print("No valid incidence angle / VOD samples available.")
+            return None, None
+
+        vod_vod_99 = np.percentile(vod[vod_target], 99.9)
+        vod_vod_01 = np.percentile(vod[vod_target], 0.1)
+        vod = vod[(vod[vod_target] <= vod_vod_99) & (vod[vod_target] >= vod_vod_01)]
+        if vod.empty:
+            print("No data left after percentile filtering.")
+            return None, None
+
+        # get SV from Multiindex
+        vod = vod.reset_index().set_index('Epoch')
+        vod['SV'] = vod['SV'].astype(str)
+        vod['Constellation'] = vod['SV'].str[0].map(constellation_map)
+        vod = vod[vod['Constellation'].notna()]
+        if vod.empty:
+            print("No constellation information available after filtering.")
+            return None, None
+
+        # -----------------------------------
+        if constellations:
+            requested = {c.lower() for c in constellations}
+            letter_to_name = constellation_map
+            name_to_letter = {v.lower(): k for k, v in letter_to_name.items() if isinstance(v, str)}
+            keep_letters = set()
+            for item in requested:
+                if len(item) == 1 and item.upper() in letter_to_name:
+                    keep_letters.add(item.upper())
+                if item in name_to_letter:
+                    keep_letters.add(name_to_letter[item])
+            if keep_letters:
+                vod = vod[vod['SV'].str[0].isin(keep_letters)]
+        if vod.empty:
+            print("No data left after constellation filtering.")
+            return None, None
+        
+        # -----------------------------------
+        if biomass_normalized:
+            # get biomass per sky-sector
+            if 'CellID' not in vod.columns:
+                print("CellID column missing; cannot perform biomass normalization.")
+            else:
+                # mean average biomass per cell and constellation
+                constellation_means = vod.groupby(['Constellation', 'CellID'])[vod_target].mean()
+                # print fracgtin of nan in constellation_means
+                total_cells = constellation_means.index.get_level_values('CellID').nunique()
+                nan_cells = constellation_means.isna().sum()
+                if total_cells > 0:
+                    frac_nan = nan_cells / total_cells * 100.0
+                    print(f"    Biomass normalization: {nan_cells} / {total_cells} cells ({frac_nan:.2f}%) have NaN mean VOD.")
+
+                # plot histogram of biomass means per constellation
+                # add constellation means to vod dataframe
+                vod = vod.reset_index().set_index(['Constellation', 'CellID'])
+                vod['HemisphericMean'] = constellation_means
+                vod[vod_target] = vod[vod_target] / vod['HemisphericMean']
+                vod.reset_index(inplace=True)
+                # drop rows with NaN HemisphericMean
+                vod = vod[vod['HemisphericMean'].notna()]
+                # remove vod values not between -5 and 10
+                vod = vod[(vod[vod_target] >= -5.0) & (vod[vod_target] <= 8.0)]
+
+                # plot histogram of normalized vod values
+                fig, ax = plt.subplots(figsize=(4,4))
+                ax.hist(vod[vod_target], bins=50, color='#0b3c5d', alpha=0.7, edgecolor='none')
+                ax.set_title("Histogram of biomass-normalized VOD values")
+                ax.set_xlabel("Biomass-normalized VOD")
+                ax.set_ylabel("Count")
+                plt.tight_layout()
+                plt.show()
+                
+                # set back to time index
+                vod = vod.set_index('Epoch')
+                # normalize vod by hemispheric mean
+                
+                if vod.empty:
+                    print("No data left after biomass normalization.")
+                    return None, None
+
+        # -----------------------------------
+        min_angle = int(np.floor(vod['_theta'].min()))
+        max_angle = int(np.ceil(vod['_theta'].max()))
+        if min_angle == max_angle:
+            max_angle += int(np.ceil(binsize))
+        bins = np.arange(min_angle, max_angle + binsize, binsize, dtype=float)
+        if bins[-1] < max_angle:
+            bins = np.append(bins, bins[-1] + binsize)
+        bins = np.unique(np.round(bins).astype(int))
+        if bins.size < 2:
+            bins = np.array([min_angle, min_angle + int(np.ceil(binsize))], dtype=int)
+
+        vod['theta_bin'] = pd.cut(vod['_theta'], bins=bins, include_lowest=True, precision=0)
+        vod = vod.dropna(subset=['theta_bin'])
+        if vod.empty:
+            print("No samples fell into the requested bins.")
+            return None, None
+
+        vod_label = self._var_label(vod_target) if hasattr(self, '_var_label') else vod_target
+
+        def _prepare_box_data(df):
+            if df.empty:
+                return np.array([]), [], []
+            bins_cat = df['theta_bin']
+            if hasattr(bins_cat, 'cat'):
+                categories = bins_cat.cat.categories
+            else:
+                categories = sorted(bins_cat.unique())
+            positions, data, labels = [], [], []
+            for interval in categories:
+                mask = bins_cat == interval
+                if not np.any(mask):
+                    continue
+                positions.append(len(labels))
+                data.append(df.loc[mask, vod_target].values)
+                labels.append(_format_interval(interval))
+            return np.array(positions, dtype=float), data, labels
+
+        def _draw_boxplot(ax, positions, data_values, labels, title):
+            if not data_values:
+                ax.text(0.5, 0.5, "No data", ha='center', va='center', transform=ax.transAxes, fontsize=9)
+                ax.set_xticks([])
+            else:
+                ax.boxplot(
+                    data_values,
+                    positions=positions,
+                    widths=0.6,
+                    patch_artist=True,
+                    showfliers=False,
+                    medianprops={'color': '#2c3e50', 'linewidth': 1.2},
+                    boxprops={'facecolor': '#1f77b4', 'alpha': 0.35, 'edgecolor': '#1f77b4'},
+                    whiskerprops={'color': '#1f77b4'},
+                    capprops={'color': '#1f77b4'},
+                )
+                ax.set_xticks(positions)
+                ax.set_xticklabels(labels, rotation=90)
+                ax.set_xlim(-0.5, positions.max() + 0.5 if len(positions) else 0.5)
+            ax.set_title(title)
+            ax.set_xlabel("Theta bin (deg)")
+            ax.set_ylabel(vod_label)
+            ax.grid(alpha=0.3, linestyle='--')
+
+        positions_all, data_all, labels_all = _prepare_box_data(vod)
+        fig_all, ax_all = plt.subplots(figsize=figsize_all)
+        _draw_boxplot(ax_all, positions_all, data_all, labels_all, "All constellations")
+        fig_all.tight_layout()
+
+        constellations_sorted = sorted(vod['Constellation'].unique())
+        fig_const = None
+        
+        suptitle = (f"GNSS-T VOD vs incidence angle $\\theta$\n"
+                    f"Clear-sky removed: {remove_open_sky}, "
+                    f"{'biomass-normalized' if biomass_normalized else 'raw'} VOD")
+        
+        if constellations_sorted:
+            cols = 2 if len(constellations_sorted) > 1 else 1
+            rows = int(np.ceil(len(constellations_sorted) / cols))
+            fig_const, axes_const = plt.subplots(rows, cols, sharex=False, sharey=True, figsize=figsize_const)
+            axes_const = np.atleast_1d(axes_const).ravel()
+            for ax, const in zip(axes_const, constellations_sorted):
+                subset = vod[vod['Constellation'] == const]
+                pos_c, data_c, labels_c = _prepare_box_data(subset)
+                _draw_boxplot(ax, pos_c, data_c, labels_c, const)
+            for ax in axes_const[len(constellations_sorted):]:
+                ax.set_visible(False)
+            fig_const.suptitle(suptitle, fontsize=12)
+            fig_const.tight_layout(rect=[0, 0, 1, 0.96])
+
+        if save_path:
+            sp = Path(save_path)
+            if sp.suffix == "":
+                sp = sp.with_suffix(".png")
+            fig_all.savefig(sp.with_name(sp.stem + "_angle_all" + sp.suffix), dpi=300, bbox_inches='tight')
+            if fig_const is not None:
+                fig_const.savefig(
+                    sp.with_name(sp.stem + "_angle_const" + sp.suffix), dpi=300, bbox_inches='tight'
+                )
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig_all)
+            if fig_const is not None:
+                plt.close(fig_const)
+
+        return fig_all, fig_const

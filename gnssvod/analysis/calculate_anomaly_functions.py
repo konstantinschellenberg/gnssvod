@@ -182,7 +182,7 @@ def calculate_binned_sky_coverage(vod_with_cells, vod_avg, band_ids, temporal_re
     return final
 
 
-def calc_anomaly_vh(vod, band_ids, suffix="",
+def calc_anomaly_vh(vod_without_cells, band_ids, suffix="",
                     temporal_resolution=30, **kwargs):
     """
     Vincent (global per-cell) anomaly calculation.
@@ -216,7 +216,14 @@ def calc_anomaly_vh(vod, band_ids, suffix="",
     pandas.DataFrame
         Aggregated anomaly time series with columns: f"{band}_anom{_suffix}"
     """
-    if vod is None or len(vod) == 0:
+    
+    # -----------------------------------
+    # make hemi to comply with the 0.5° paper angular resolution, and 10° cutoff
+    import gnssvod as gv
+    hemi = gv.hemibuild(0.5, 80)
+    vod_with_cells = hemi.add_CellID(vod_without_cells.copy(), drop=True)
+    
+    if vod_with_cells is None or len(vod_with_cells) == 0:
         return pd.DataFrame()
 
     # Resolve frequency (accept minutes int or pandas offset string)
@@ -233,7 +240,7 @@ def calc_anomaly_vh(vod, band_ids, suffix="",
     _suffix = f"_{suffix}" if suffix else ""
 
     # Ensure we have an Epoch index level
-    work = vod.copy()
+    work = vod_with_cells.copy()
     if 'Epoch' not in work.index.names:
         if 'Epoch' in work.columns:
             work = work.set_index('Epoch', drop=True)
@@ -281,13 +288,105 @@ def calc_anomaly_vh(vod, band_ids, suffix="",
         .agg(agg_fun_ts)
         .dropna(how='all')
     )
+    
+    return ts
 
-    return ts, cell_means
+
+def _drop_timeseries_dips(ts, anom_cols, dip_threshold_ptl=0.95, loess_frac=0.1):
+    """
+    Create a mask based on VOD value percentile.
+
+    VOD time series is detrended before using low-pass loess filter.
 
 
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Input dataframe with VOD data
+    vod_column : str
+        Column name for the VOD data to use for percentile filtering
+    min_percentile : float
+        Minimum percentile threshold (0-1)
 
-def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
-                    temporal_resolution=30, **kwargs):
+    Returns:
+    --------
+    pandas.Series
+        Boolean mask where True means the row meets the percentile requirement
+    """
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
+    for anom in anom_cols:
+        # Get valid data (non-NaN values)
+        df = ts.copy()
+        valid_mask = ~ df[anom].isna()
+        valid_indices = df.index[valid_mask]
+        valid_values = df.loc[valid_mask, anom].values
+        
+        if len(valid_values) < 2:
+            print(f"Warning: Not enough valid data points in '{anom_cols}' for detrending")
+            return pd.Series(True, index=df.index)
+        
+        # Convert datetime indices to numeric values for LOESS
+        if isinstance(valid_indices[0], (pd.Timestamp, np.datetime64)):
+            x_values = np.array([(idx - valid_indices[0]).total_seconds() for idx in valid_indices])
+        else:
+            x_values = np.arange(len(valid_indices))
+        
+        # Apply LOESS smoothing to get the trend
+        loess_result = lowess(valid_values, x_values, frac=loess_frac, it=0)
+        trend_values = loess_result[:, 1]
+        
+        # Calculate detrended values by subtracting the trend
+        detrended_values = np.abs(valid_values - trend_values)
+        detrended_values = pd.Series(detrended_values, index=valid_indices)
+        
+        # Calculate percentile threshold on detrended data
+        percentile_threshold = np.percentile(detrended_values, dip_threshold_ptl * 100)
+        
+        # Create mask: True if detrended value >= threshold
+        detrended_mask = detrended_values <= percentile_threshold
+        
+        # Create full mask with default True for NaN values
+        full_mask = pd.Series(True, index=df.index)
+        
+        # Map values back to full mask using positions rather than indices
+        full_mask.iloc[np.where(valid_mask)[0]] = detrended_mask.values
+        
+        # set values of anom to nan where mask is False
+        ts.loc[~full_mask, anom] = pd.NA
+        
+        # Plot if requested
+        if False:
+            import matplotlib.pyplot as plt
+            
+            plt.figure(figsize=(10, 6))
+            plt.plot(valid_indices, valid_values, 'b-', alpha=0.7, label=f'Original {anom_cols}')
+            plt.plot(valid_indices, trend_values, 'r-', linewidth=2, label='LOESS Trend')
+            plt.plot(valid_indices, detrended_values, 'g-', alpha=0.7, label='Detrended VOD')
+            plt.axhline(y=percentile_threshold, color='purple', linestyle='--',
+                        label=f'{dip_threshold_ptl * 100:.1f}th Percentile of abs(signal) ({percentile_threshold:.3f})')
+            
+            # Highlight filtered points
+            filtered_indices = [valid_indices[i] for i in range(len(valid_indices)) if not detrended_mask[i]]
+            filtered_values = [detrended_values[i] for i in range(len(valid_indices)) if not detrended_mask[i]]
+            
+            if filtered_indices:
+                plt.scatter(filtered_indices, filtered_values, color='red', s=20, alpha=0.8,
+                            label='Filtered Points (excluded)')
+            
+            plt.title(f'VOD Data with LOESS Trend and {dip_threshold_ptl * 100:.1f}th Percentile Threshold')
+            plt.xlabel('Date')
+            plt.ylabel('VOD Value')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.show()
+            
+    return ts
+
+
+def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", drop_dips=False, drop_clearsky=False, drop_outliersats=False,
+                    suffix="", temporal_resolution=30, **kwargs):
     """
     Konstantin (SV-specific per-cell) anomaly calculation — concise code, verbose annotations.
 
@@ -355,6 +454,7 @@ def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
 
     agg_fun_vodoffset = kwargs.get("agg_fun_vodoffset", "median")
     agg_fun_ts = kwargs.get("agg_fun_ts", "median")
+    
     # eval_num_obs_tps = kwargs.get("eval_num_obs_tps", False)
     # show = kwargs.get("show", False)
     freq = _to_freq(temporal_resolution)
@@ -362,9 +462,18 @@ def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
     assert ks_strategy in ("sv","con"), "ks_strategy must be 'sv' or 'con'"
     
     strategy = "SV" if ks_strategy == "sv" else "Constellation"
+    
+    # -----------------------------------
+    work = vod.copy()
+    # -----------------------------------
+    # Pre-filter
+    # Drop outlier satellites if requested
+    
+    rmv_svs = ["R13", "E06", "E29"]
+    if drop_outliersats:
+        work = drop_outlier_sats(work, rmv_svs)
 
     # ---- input validation / index normalization ------------------------------
-    work = vod.copy()
     # Ensure 'Epoch' is an index level
     if 'Epoch' not in work.index.names:
         if 'Epoch' in work.columns:
@@ -404,6 +513,14 @@ def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
         work = work.set_index(['Epoch', 'Constellation'], drop=True)
 
     work = work.sort_index()  # deterministic grouping
+    
+    # -----------------------------------
+    # Optional filters
+    # Drop clear-sky cells if requested
+    
+    if drop_clearsky:
+        work = _drop_clearsky_cells(band_ids, work, kwargs.get("drop_clearsky_threshold", 0.1))
+
 
     # ---- 1) per-(SV, CellID) means ------------------------------------------
     # Compute means for all bands at once; columns become e.g. 'VOD1_mean'
@@ -432,17 +549,7 @@ def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
 
     if not anom_cols:
         return pd.DataFrame()
-
-    # ---- (Optional) evaluate observations per (SV, CellID) -------------------
-    # Keep behavior from the previous implementation; gated by flags.
-    # if eval_num_obs_tps and show:
-    #     try:
-    #         counts = work.groupby(['SV', 'CellID']).size().to_frame('n')
-    #         # Reuse the existing plotting helper
-    #         plot_sv_observation_counts(counts.reset_index(), min_threshold=10, figsize=(6, 4))
-    #     except Exception:
-    #         pass
-
+    
     # ---- 3) temporal aggregation on 'Epoch' ---------------------------------
     ts = (
         work[anom_cols]
@@ -450,7 +557,16 @@ def calc_anomaly_ks(vod, band_ids, ks_strategy="sv", suffix="",
             .agg(agg_fun_ts)
             .dropna(how='all')
     )
-
+    
+    # -----------------------------------
+    # postprocessing
+    
+    if drop_dips:
+        ts = _drop_timeseries_dips(ts, anom_cols,
+                                   kwargs.get("drop_dips_threshold", 0.95),
+                                   kwargs.get("drop_dips_loessfrac", 0.1)
+                                   )
+    
     return ts
 
 def calc_anomaly_ksak(vod, band_ids, timedelta: pd.Timedelta, suffix="",

@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from cmocean.cm import cmap_d
 import pandas as pd
+import cProfile
+import pstats
+import io
 
 from analysis.config import AnomalyConfig, VodConfig
 from definitions import FIG
@@ -30,14 +32,10 @@ FIG.mkdir(parents=True, exist_ok=True)
 
 # -----------------------------------
 # LOCAL SETTINGS (that deviate from settings.py)
-# interval = ('2023-01-01', '2023-10-31')  # single_file_interval: ('2024-07-15', '2024-08-12') is the longest non-rain period
-# interval = ('2024-01-01', '2024-10-31')
-interval = ('2024-07-15', '2024-08-12') # single_file_interval: ('2024-07-15', '2024-08-12') is the longest non-rain period
-# interval = ('2023-07-15', '2023-08-12') # single_file_interval: ('2024-07-15', '2024-08-12') is the longest non-rain period
 # for moflux: 1.6.24 - 1.11.24
-interval = ('2024-01-06', '2024-11-06')
+# interval = ('2024-06-01', '2024-08-14') # MAIN VALID MOFLUX PERIOD
+interval = ('2024-04-06', '2024-11-06')  # PERIOD ALL
 # interval = ('2024-01-06', '2024-01-08')
-
 
 # new parameters for VODProcessor.process_anomaly
 station = 'MOz'
@@ -46,19 +44,26 @@ visualization_timezone = "etc/GMT+6"
 # -----------------------------------
 # Configuration dataclasses
 vod_cfg = VodConfig(local_file=False, overwrite=False)
+
+"""
+- Config does not apply to Humphrey method, use settings from paper
+"""
 cfg = AnomalyConfig(
-    angular_resolution=1,
-    angular_cutoff=30,
+    angular_resolution=2,
+    # angular_cutoff=(50, 70),  # elevation angle, either >30 or (55,60) for moz
+    angular_cutoff=30,  # either >30 or (55,60) for moz
     temporal_resolution=30,
     make_ke=False,
     agg_fun_vodoffset="median",  # Operator used for calculating mean VOD offset
     agg_fun_ts="median",  # Operator used for temporal aggregation of time series
     agg_fun_satincell="median",
     anom_ak_timedelta=pd.Timedelta(days=1),  # temporal window for AK mean VOD offset
-    constellations=["gps", "glonass", "galileo"],
-    drop_clearsky=False,
+    constellations=["gps", "galileo", "glonass"],
+    drop_clearsky=True,
     drop_clearsky_threshold=0.1,
     drop_outliersats=True,  # Remove manually inspected orbit outliers
+    drop_dips=True,  # Remove dips in VOD time series
+    drop_dips_threshold=0.97,  # Threshold for dip detection
     ks_strategy="con",  # "con" or "sv"
     calculate_biomass_bins=False,
     overwrite=True,  # overwrite existing anomaly results
@@ -130,7 +135,6 @@ def main():
     print(sv_stats) if sv_stats is not None else print("No statistics available.")
 
     # Plot overpass time-of-day densities (example: all constellations, elevation >= 10)
-    print_color("Plotting overpass time-of-day densities...")
     processor.plot_overpass_tod(
         constellations=['gps', 'glonass', 'galileo'],
         viz="kde",  # 'hist' or 'kde'
@@ -145,6 +149,21 @@ def main():
     )
     
     # -----------------------------------
+    # Plot incidence-angle distributions
+    processor.plot_von_incidenceangle(
+        vod_col=f"VOD{gnss_band}",
+        theta_col="Elevation",
+        binsize=5.0,
+        constellations=['gps', 'glonass', 'galileo'],
+        figsize_all=(4, 4),
+        figsize_const=(7, 7),
+        remove_open_sky=False,
+        biomass_normalized=False,
+        save_path=FIG / "incidence_angle_distribution.png",
+        show=True,
+        make=False,
+    )
+    # -----------------------------------
     # 2) ANOMALY DETECTION
     # -----------------------------------
     # Build a concise anomaly configuration and run
@@ -154,7 +173,7 @@ def main():
     # Output data:
     #   - Dimensions: (time)
     #   - Temporal spacing: cfg (mostly 30 minutes)
-    
+
     processor.process_anomaly(cfg=cfg)
     print_color("Processing complete.")
     
@@ -162,12 +181,12 @@ def main():
     # VISUALIZATION
     # 1) Time series plot, is an xarray
     # print data variables in the xarray
-    print(processor.results.data_vars)
+    # print(processor.results.data_vars)
     
     processor.plot_diel(
         vars=visualized_anoms,
         time_zone=visualization_timezone,
-        y_range=(0.4, 0.8),
+        y_range=(0.2,0.75),
         figsize=(8, 4),
         gradient_cmap=cmap_plasma,
         save_path=FIG / "vod_diel.png",
@@ -187,7 +206,7 @@ def main():
         make=False
     )
     
-    # -----------------------------------
+    # --------------------------------- --
     # 3) Time series plot
     processor.plot_time_series(
         vars=visualized_anoms,
@@ -211,12 +230,31 @@ def main():
     
     # -----------------------------------
     # X) Hemispheric mean and standard deviation plot
-    print(processor.hemi.columns.tolist())
     make_hemi = False
+    # currently throws errors
     processor.plot_hemispheric(var="VOD1_mean", type="vod", angle_res=cfg.angular_resolution,
                               angle_cutoff=30., clim="auto", title="MOz: VOD1 Mean", make=make_hemi)
-    # processor.plot_hemispheric(var="VOD1_std", type="std", angle_res=cfg.angular_resolution,
-    #                           angle_cutoff=30., clim="perc_975", title="MOz: VOD1 Standard Deviation", make=make_hemi)
 
 if __name__ == "__main__":
+    # Run profiler
+    profiler = cProfile.Profile()
+    profiler.enable()
+    start_time = pd.Timestamp.now()
+    # -----------------------------------
     main()
+    # -----------------------------------
+    # Stop profiler
+    profiler.disable()
+    profiler.dump_stats("prof.out")
+    
+    # Print profiling results
+    s = io.StringIO()
+    ps = pstats.Stats("prof.out", stream=s).strip_dirs().sort_stats("cumulative")
+    ps.print_stats(50)
+    print(s.getvalue())
+    
+    # end time
+    end_time = pd.Timestamp.now()
+    dtime = end_time - start_time
+    # in seconds
+    print_color(f"Total processing time: {dtime.total_seconds()/60:.2f} minutes")

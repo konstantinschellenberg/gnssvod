@@ -1389,7 +1389,6 @@ def characterize_precipitation(df, dataset_col='VOD1_anom_gps+gal', precip_quant
     result = pd.DataFrame(index=df.index)
     
     try:
-        
         wetness = pd.read_csv(filepath_environmentaldata, index_col=0, parse_dates=True)["wet"]
         # make wetness mask (if wetness == "yes", then True)
         wetness_mask = (wetness == "yes").astype(int)
